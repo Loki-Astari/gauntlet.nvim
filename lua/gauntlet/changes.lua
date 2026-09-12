@@ -75,9 +75,11 @@ end
 ---@return table[]|nil files, string|nil err
 ---  files are { path, status, additions, deletions, binary, from? }, sorted by path
 function M.list(root, base, head)
-  -- -M so a rename is reported as one, and quotepath off so a non-ASCII path
-  -- arrives as itself rather than as octal escapes.
-  local args = { "-c", "core.quotepath=false", "diff", "-M" }
+  -- --no-ext-diff because a configured diff.external would be run in place of
+  -- git's own diff, and these want git's output.  -M so a rename is reported
+  -- as one, and quotepath off so a non-ASCII path arrives as itself rather
+  -- than as octal escapes.
+  local args = { "-c", "core.quotepath=false", "diff", "--no-ext-diff", "-M" }
   local status_lines, err = git.run(root, vim.list_extend(vim.deepcopy(args), { "--name-status", base, head }))
   if not status_lines then
     return nil, err

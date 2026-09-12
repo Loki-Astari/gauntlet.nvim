@@ -165,8 +165,14 @@ function M.open(repo, pr)
   -- Warm the object cache while we still have the network.  On a partial
   -- clone (this repository is filtered blob:none) the base side of every
   -- changed file is missing, and reading it later would need a fetch per
-  -- file.  Diffing both sides pulls them all down in one go.
-  git.run(root, { "diff", "--quiet", base, ref })
+  -- file.  Counting the lines both ways has to read every blob on both
+  -- sides, which pulls them all down in one go.
+  --
+  -- Not `diff --quiet`: that stops at the first difference it finds, so most
+  -- of the blobs would never be read, which is the opposite of warming them.
+  -- And --no-ext-diff because a configured diff.external would otherwise be
+  -- run instead, producing no reads at all.
+  git.run(root, { "diff", "--no-ext-diff", "--numstat", base, ref })
 
   write_json(meta_path, {
     base = base,

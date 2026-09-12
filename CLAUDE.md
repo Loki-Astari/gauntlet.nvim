@@ -109,6 +109,33 @@ cannot be rebuilt.
 Afterwards the file list and both sides of every diff come from local git.
 `GIT_NO_LAZY_FETCH=1` is how to test that offline really works.
 
+**No diff is ever downloaded.** The only calls to GitHub in a review are `gh
+pr view` for metadata -- number, title, body, `baseRefOid`, `headRefOid`.
+Every hunk is computed locally.
+
+Every `git diff` must pass `--no-ext-diff`: a configured `diff.external`
+(this machine has one) is otherwise run in place of git's own diff, and
+returns no usable output. And the cache warming must *not* use
+`diff --quiet`, which stops at the first difference it finds and so never
+reads the rest of the blobs -- the opposite of warming them. `--numstat` has
+to read both sides of every file, which is the point.
+
+### Why the whole project is checked out
+
+Questioned and re-affirmed. Measured on a 14,572-file repository:
+
+| approach | time | disk | real files for LSP |
+| --- | --- | --- | --- |
+| full worktree | 2.0s | 64M | yes, whole project |
+| sparse, changed files only | 0.11s | 128K | changed files only |
+| no checkout, `git show` | 0.02s | 0 | no |
+
+The full checkout costs disk, not download -- the commits and trees are
+fetched either way, and blobs only where the clone does not already have
+them. What it buys is a complete project tree, so a language server resolves
+imports into files the pull request never touched, `gd` jumps into them, and
+the pull request's tests could be run. That was judged worth 64M a review.
+
 ## Conventions
 
 - Tests use plenary.nvim's busted runner under `tests/`.
