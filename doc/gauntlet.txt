@@ -83,6 +83,15 @@ message goes to standard error and vig exits non-zero, with no Neovim left
 running.  On success the fetched pull request is handed to Neovim directly, so
 GitHub is asked only once.
 
+The review is opened once startup has finished, not during it.  Neovim runs
+"-c" commands *before* |VimEnter|, so a config that restores a session there,
+or opens a dashboard or a file tree, would otherwise land on top of the review
+and replace it.  If your config does restore a session, `vig {id}` gives you
+that session with the review as an extra, focused tab.  To have `vig` skip the
+restore, guard the autocommand on the variable vig sets: >lua
+
+    if vim.env.GAUNTLET_PRELOAD then return end
+<
 $GAUNTLET_NVIM overrides the Neovim executable vig uses.
 
 ==============================================================================

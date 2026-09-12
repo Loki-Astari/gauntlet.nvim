@@ -105,10 +105,10 @@ function M.review(input)
   end)
 end
 
---- Open a pull request that `vig` already fetched and validated, so starting
---- Neovim does not repeat the network round trip.
---- The path arrives in $GAUNTLET_PRELOAD; the file is ours, and consumed once.
-function M.open_preload()
+--- Show the pull request `vig` left in $GAUNTLET_PRELOAD.
+--- The file is ours, and is consumed exactly once.
+--- Exposed for the tests; M.open_preload() is the entry point.
+function M._open_preloaded()
   local path = vim.env.GAUNTLET_PRELOAD
   if not path or path == "" then
     return
@@ -123,12 +123,36 @@ function M.open_preload()
 
   local decoded
   ok, decoded = pcall(vim.json.decode, table.concat(content, "\n"))
-  if not ok or not decoded then
+  if not ok or not decoded or not decoded.pr then
     vim.notify("gauntlet: could not read the preloaded pull request", vim.log.levels.ERROR)
     return
   end
 
   require("gauntlet.ui").conversation(decoded.pr, decoded.repo)
+end
+
+--- Open a pull request that `vig` already fetched and validated, so starting
+--- Neovim does not repeat the network round trip.
+function M.open_preload()
+  -- `vig` calls this from a -c argument, and Neovim runs those *before*
+  -- VimEnter.  A config that restores a session on VimEnter -- or opens a
+  -- dashboard, or a file tree -- would then land on top of the review we had
+  -- just put up, and 'bufhidden' "wipe" means the review would not survive
+  -- even as a buffer.  Let startup finish first.
+  if vim.v.vim_did_enter == 0 then
+    vim.api.nvim_create_autocmd("VimEnter", {
+      group = vim.api.nvim_create_augroup("GauntletPreload", { clear = true }),
+      once = true,
+      nested = true,
+      callback = function()
+        vim.schedule(M._open_preloaded)
+      end,
+      desc = "Gauntlet: open the preloaded pull request once startup has settled",
+    })
+    return
+  end
+
+  M._open_preloaded()
 end
 
 return M
