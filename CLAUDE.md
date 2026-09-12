@@ -42,11 +42,99 @@ it either never starts, or starts only long enough to print and exit.
 
 Prints the list of open PRs to stdout. Neovim is not started.
 
-## Current scope of "PR review mode"
+## The review interface
 
-Display a **read-only** window containing the conversation part of the PR —
-the description the developer wrote to explain what the PR is about. Diffs,
-comment threads, and review submission are all later work.
+Settled by design before implementation. One tab page per review, named
+`PR Review <id>`.
+
+```
+[ PR Review 1 ]
++- Files ---------+- lua/gauntlet/ui.lua ---------------+
+| > Conversation  |  base (read-only) |  head (read-only)|
+|                 |                   |                  |
+| M .gitignore +3 |  local M = {}     |  local M = {}    |
+| A CLAUDE.md +54 |                   | +function M.pick |
+| M README.md +52 |  return M         |  return M        |
++-----------------+-------------------+------------------+
+```
+
+- A **persistent sidebar** on the left lists the changed files as **flat
+  sorted paths**, with status letter and line counts. `Conversation` is the
+  first entry, so the description is one keystroke from any file.
+- Selecting a file shows a **two-pane vimdiff**: merge-base version on the
+  left, PR version on the right.
+- **Everything is read-only.** Nothing the reviewer types can alter a file.
+  This does not cost LSP or `gd`, which work on non-modifiable buffers.
+
+Later, and deliberately not yet: review comments, and submitting a review.
+The sidebar leaves room for a per-file "viewed" marker and comment counts.
+
+## The review worktree
+
+A review is backed by a **git worktree**, so that a review can be *started*
+online and *finished* offline. Asking GitHub to serve each diff would make
+that impossible.
+
+```
+~/.local/state/nvim/gauntlet/<repo>/pr-<N>/
+    worktree/       git worktree, detached at the PR head
+    comments.json   draft review comments (later)
+    meta.json       base sha, head sha, when fetched
+```
+
+The worktree is a *subdirectory* of the review, not the review itself:
+gauntlet's own files must never appear in the worktree's `git status`, where
+they could be committed by accident.
+
+Persistent, not `$TMPDIR`. This is the one deliberate departure from how
+AIAgent creates worktrees (`~/Repo/AIAgent`, `create_worktree()`), which is
+otherwise the model followed here: derive a path, reconnect if it already
+exists, parse `git worktree list --porcelain` to find it. macOS purges
+`$TMPDIR`, and a review whose worktree vanishes while its owner is offline
+cannot be rebuilt.
+
+### Starting a review, while still online
+
+1. `git fetch origin refs/pull/<N>/head:refs/gauntlet/pr/<N>`. This ref
+   exists on the base repository even for pull requests from forks.
+2. Base commit is `git merge-base <baseRefOid> <headRefOid>`, both from `gh`.
+   *Not* the tip of the base branch: for a merged pull request that gives a
+   degenerate merge-base equal to the head, and so an empty diff.
+3. `git worktree add --detach <dir>/worktree refs/gauntlet/pr/<N>`.
+4. **Warm the object cache.** The clone may be partial (this one is
+   `blob:none`), in which case base-side blobs are fetched lazily and the
+   review would need the network after all. `git diff <base> <head>` touches
+   both sides and lets git batch a single promisor fetch.
+
+Afterwards the file list and both sides of every diff come from local git.
+`GIT_NO_LAZY_FETCH=1` is how to test that offline really works.
+
+**No diff is ever downloaded.** The only calls to GitHub in a review are `gh
+pr view` for metadata -- number, title, body, `baseRefOid`, `headRefOid`.
+Every hunk is computed locally.
+
+Every `git diff` must pass `--no-ext-diff`: a configured `diff.external`
+(this machine has one) is otherwise run in place of git's own diff, and
+returns no usable output. And the cache warming must *not* use
+`diff --quiet`, which stops at the first difference it finds and so never
+reads the rest of the blobs -- the opposite of warming them. `--numstat` has
+to read both sides of every file, which is the point.
+
+### Why the whole project is checked out
+
+Questioned and re-affirmed. Measured on a 14,572-file repository:
+
+| approach | time | disk | real files for LSP |
+| --- | --- | --- | --- |
+| full worktree | 2.0s | 64M | yes, whole project |
+| sparse, changed files only | 0.11s | 128K | changed files only |
+| no checkout, `git show` | 0.02s | 0 | no |
+
+The full checkout costs disk, not download -- the commits and trees are
+fetched either way, and blobs only where the clone does not already have
+them. What it buys is a complete project tree, so a language server resolves
+imports into files the pull request never touched, `gd` jumps into them, and
+the pull request's tests could be run. That was judged worth 64M a review.
 
 ## Conventions
 

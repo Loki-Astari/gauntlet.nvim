@@ -14,3 +14,10 @@ end, {
   nargs = "?",
   desc = "Review a GitHub pull request (by number or URL; no argument lists open PRs)",
 })
+
+vim.api.nvim_create_user_command("GauntletDiscard", function(opts)
+  require("gauntlet").discard(opts.args)
+end, {
+  nargs = "?",
+  desc = "Remove a review from disk: its worktree, its ref and its drafts",
+})

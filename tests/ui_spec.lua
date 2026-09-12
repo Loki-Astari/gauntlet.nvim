@@ -1,147 +1,187 @@
 describe("gauntlet.ui", function()
   local ui = require("gauntlet.ui")
+  local changes = require("gauntlet.changes")
+  local helpers = require("tests.helpers")
 
-  local repo = { owner = "o", repo = "r" }
+  local fixture, state
+
   local pr = {
     number = 142,
     title = "Fix off-by-one in ring buffer",
     author = { login = "loki" },
     headRefName = "fix/ring-buf",
-    baseRefName = "master",
+    baseRefName = "main",
     createdAt = "2026-09-10T08:15:00Z",
     url = "https://github.com/o/r/pull/142",
-    additions = 12,
-    deletions = 4,
-    changedFiles = 2,
+    additions = 2,
+    deletions = 1,
+    changedFiles = 3,
     body = "A description.",
   }
 
-  --- Start from one tab holding the sort of empty buffer Neovim opens with.
-  local function fresh_tab()
+  --- The fixture's working tree is checked out at head, which is the shape of
+  --- a review worktree, so it stands in for one.
+  local function open()
+    return ui.review({
+      repo = { owner = "o", repo = "r" },
+      pr = pr,
+      review = {
+        dir = fixture.root,
+        worktree = fixture.root,
+        base = fixture.base,
+        head = fixture.head,
+        number = pr.number,
+      },
+      files = assert(changes.list(fixture.root, fixture.base, fixture.head)),
+      root = fixture.root,
+    })
+  end
+
+  local function sidebar_lines()
+    return vim.api.nvim_buf_get_lines(state.sidebar_buf, 0, -1, false)
+  end
+
+  --- Line number of the sidebar entry whose text contains `needle`.
+  local function line_of(needle)
+    for i, text in ipairs(sidebar_lines()) do
+      if text:find(needle, 1, true) then
+        return i
+      end
+    end
+    error("no sidebar line containing " .. needle)
+  end
+
+  local function select_entry(needle)
+    vim.api.nvim_set_current_win(state.sidebar_win)
+    vim.api.nvim_win_set_cursor(state.sidebar_win, { line_of(needle), 0 })
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
+  end
+
+  --- The windows on the right, left to right.
+  local function panes()
+    local out = {}
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(state.tab)) do
+      if win ~= state.sidebar_win then
+        table.insert(out, win)
+      end
+    end
+    return out
+  end
+
+  before_each(function()
+    fixture = helpers.repo()
     while #vim.api.nvim_list_tabpages() > 1 do
       vim.cmd("tabclose")
     end
     vim.cmd("enew!")
-  end
+    state = open()
+  end)
 
-  before_each(fresh_tab)
-  after_each(fresh_tab)
+  after_each(function()
+    while #vim.api.nvim_list_tabpages() > 1 do
+      vim.cmd("tabclose")
+    end
+    vim.cmd("enew!")
+    fixture.cleanup()
+  end)
 
-  describe("conversation", function()
-    it("takes over the empty starting buffer rather than opening a tab", function()
-      -- What `vig` leaves behind: nothing loaded, one window, one tab.
-      local before = #vim.api.nvim_list_tabpages()
-      local buf = ui.conversation(pr, repo)
-
-      assert.equals(before, #vim.api.nvim_list_tabpages())
-      assert.equals(buf, vim.api.nvim_get_current_buf())
-
-      -- ...and no blank [No Name] buffer stranded beside it.
-      local blank = 0
-      for _, b in ipairs(vim.api.nvim_list_bufs()) do
-        if vim.bo[b].buflisted and vim.api.nvim_buf_get_name(b) == "" then
-          blank = blank + 1
-        end
-      end
-      assert.equals(0, blank)
+  describe("the sidebar", function()
+    it("names the review and the repository", function()
+      local lines = sidebar_lines()
+      assert.equals("PR Review 142", lines[1])
+      assert.equals("o/r", lines[2])
     end)
 
-    it("opens its own tab when there is work on screen", function()
-      vim.api.nvim_buf_set_lines(0, 0, -1, false, { "some work in progress" })
-      local before = #vim.api.nvim_list_tabpages()
-
-      ui.conversation(pr, repo)
-      assert.equals(before + 1, #vim.api.nvim_list_tabpages())
+    it("offers the conversation as its first entry", function()
+      assert.is_truthy(line_of("Conversation"))
     end)
 
-    it("opens its own tab when the window is shared", function()
-      vim.cmd("split")
-      local before = #vim.api.nvim_list_tabpages()
-
-      ui.conversation(pr, repo)
-      assert.equals(before + 1, #vim.api.nvim_list_tabpages())
+    it("lists every changed file with its status and counts", function()
+      local text = table.concat(sidebar_lines(), "\n")
+      assert.is_truthy(text:find("Files (3)", 1, true))
+      assert.is_truthy(text:find("M change.txt", 1, true))
+      assert.is_truthy(text:find("A new.txt", 1, true))
+      assert.is_truthy(text:find("D gone.txt", 1, true))
+      assert.is_truthy(text:find("+2 −1", 1, true))
     end)
 
-    it("is a read-only scratch buffer", function()
-      local buf = ui.conversation(pr, repo)
-      assert.equals("nofile", vim.bo[buf].buftype)
-      assert.equals("markdown", vim.bo[buf].filetype)
-      assert.is_false(vim.bo[buf].modifiable)
-      assert.is_true(vim.bo[buf].readonly)
-      assert.is_false(vim.bo[buf].swapfile)
+    it("leaves unchanged files out", function()
+      assert.is_nil(table.concat(sidebar_lines(), "\n"):find("keep.txt", 1, true))
     end)
 
-    it("titles the view PR Review <id>", function()
-      assert.equals("PR Review 142", ui.title(pr))
+    it("cannot be edited", function()
+      assert.is_false(vim.bo[state.sidebar_buf].modifiable)
     end)
 
-    it("labels the tab with the title", function()
-      -- Both Neovim's tabline and bufferline-style plugins label from the
-      -- tail of the buffer name, so that is what has to read well.
-      local buf = ui.conversation(pr, repo)
-      assert.equals("PR Review 142", vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buf), ":t"))
-      assert.equals("PR Review 142", vim.t.gauntlet_title)
-    end)
-
-    it("keeps the repository in the buffer name, so two #1s can coexist", function()
-      local name = vim.api.nvim_buf_get_name(ui.conversation(pr, repo))
-      assert.is_truthy(name:find("o/r/PR Review 142", 1, true))
-    end)
-
-    it("maps q to close the view", function()
-      local buf = ui.conversation(pr, repo)
-      local mapped = false
-      for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
-        mapped = mapped or map.lhs == "q"
-      end
-      assert.is_true(mapped)
-    end)
-
-    it("holds the rendered conversation", function()
-      local buf = ui.conversation(pr, repo)
-      local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-      assert.equals("# #142  Fix off-by-one in ring buffer", lines[1])
-      assert.is_truthy(table.concat(lines, "\n"):find("A description.", 1, true))
+    it("keeps its width when a diff opens beside it", function()
+      local width = vim.api.nvim_win_get_width(state.sidebar_win)
+      select_entry("change.txt")
+      assert.equals(width, vim.api.nvim_win_get_width(state.sidebar_win))
     end)
   end)
 
-  describe("pick", function()
-    it("says nothing is open rather than failing on an empty list", function()
-      local chosen = false
-      ui.pick({}, function()
-        chosen = true
-      end)
-      assert.is_false(chosen)
+  describe("the review tab", function()
+    it("is labelled PR Review <id>", function()
+      assert.equals("PR Review 142", vim.t.gauntlet_title)
+      assert.equals("PR Review 142", vim.fn.fnamemodify(vim.api.nvim_buf_get_name(state.sidebar_buf), ":t"))
     end)
 
-    it("passes the chosen pull request on", function()
-      local select = vim.ui.select
-      vim.ui.select = function(items, _, on_choice)
-        on_choice(items[2])
+    it("opens on the conversation", function()
+      assert.equals(1, #panes())
+      local buf = vim.api.nvim_win_get_buf(panes()[1])
+      assert.equals("# #142  Fix off-by-one in ring buffer", vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1])
+    end)
+  end)
+
+  describe("selecting a file", function()
+    it("shows both sides side by side, in diff mode", function()
+      select_entry("change.txt")
+      local wins = panes()
+      assert.equals(2, #wins)
+      for _, win in ipairs(wins) do
+        assert.is_true(vim.wo[win].diff)
       end
-
-      local got
-      ui.pick({ { number = 1, title = "a" }, { number = 2, title = "b" } }, function(choice)
-        got = choice
-      end)
-      vim.ui.select = select
-
-      assert.equals(2, got.number)
     end)
 
-    it("does nothing when the picker is cancelled", function()
-      local select = vim.ui.select
-      vim.ui.select = function(_, _, on_choice)
-        on_choice(nil)
+    it("puts the base on the left and the pull request on the right", function()
+      select_entry("change.txt")
+      local left, right = panes()[1], panes()[2]
+      assert.same({ "alpha", "beta" }, vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(left), 0, -1, false))
+      assert.same({ "alpha", "BETA", "gamma" }, vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(right), 0, -1, false))
+    end)
+
+    it("leaves the left side empty for an added file", function()
+      select_entry("new.txt")
+      local left = vim.api.nvim_win_get_buf(panes()[1])
+      assert.same({ "" }, vim.api.nvim_buf_get_lines(left, 0, -1, false))
+      assert.same({ "fresh" }, vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(panes()[2]), 0, -1, false))
+    end)
+
+    it("leaves the right side empty for a deleted file", function()
+      select_entry("gone.txt")
+      assert.same({ "bye" }, vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(panes()[1]), 0, -1, false))
+      assert.same({ "" }, vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(panes()[2]), 0, -1, false))
+    end)
+
+    it("makes neither side editable", function()
+      -- A review must not be able to change the checkout, and the right-hand
+      -- side is a real file in the worktree.
+      select_entry("change.txt")
+      for _, win in ipairs(panes()) do
+        assert.is_false(vim.bo[vim.api.nvim_win_get_buf(win)].modifiable)
       end
+    end)
 
-      local chosen = false
-      ui.pick({ { number = 1, title = "a" } }, function()
-        chosen = true
-      end)
-      vim.ui.select = select
+    it("goes back to the conversation", function()
+      select_entry("change.txt")
+      assert.equals(2, #panes())
+      select_entry("Conversation")
+      assert.equals(1, #panes())
+    end)
 
-      assert.is_false(chosen)
+    it("returns the cursor to the file list", function()
+      select_entry("change.txt")
+      assert.equals(state.sidebar_win, vim.api.nvim_get_current_win())
     end)
   end)
 end)

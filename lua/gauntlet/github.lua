@@ -14,6 +14,8 @@ local PR_FIELDS = table.concat({
   "url",
   "headRefName",
   "baseRefName",
+  "headRefOid",
+  "baseRefOid",
   "createdAt",
   "additions",
   "deletions",

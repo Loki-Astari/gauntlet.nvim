@@ -53,15 +53,26 @@ if mode == "review" then
     die(err)
   end
 
-  -- Hand the fetched pull request to the Neovim we are about to start, rather
-  -- than making it ask GitHub all over again.  os.tmpname() rather than
+  -- Fetch the pull request and check it out here, not in the editor: this is
+  -- the part that can fail slowly -- no network, a vanished branch, a
+  -- repository too shallow to find the merge base -- and vig promises that a
+  -- failure is a message on the terminal, not a half-open review.
+  io.stderr:write(("vig: preparing the review of #%d\n"):format(pr.number))
+  local ctx
+  ctx, err = gauntlet.prepare(repo, pr)
+  if not ctx then
+    die(err)
+  end
+
+  -- Hand the whole prepared review to the Neovim we are about to start, rather
+  -- than making it do any of that again.  os.tmpname() rather than
   -- vim.fn.tempname(): the latter is erased when this process exits.
   local path = os.tmpname()
   local file, ferr = io.open(path, "w")
   if not file then
     die(ferr or ("could not write " .. path))
   end
-  file:write(vim.json.encode({ repo = repo, pr = pr }))
+  file:write(vim.json.encode(ctx))
   file:close()
 
   io.stdout:write(path .. "\n")
