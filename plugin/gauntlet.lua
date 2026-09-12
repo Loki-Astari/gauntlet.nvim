@@ -8,4 +8,9 @@ if vim.g.loaded_gauntlet then
 end
 vim.g.loaded_gauntlet = true
 
--- No commands yet.
+vim.api.nvim_create_user_command("Gauntlet", function(opts)
+  require("gauntlet").review(opts.args)
+end, {
+  nargs = "?",
+  desc = "Review a GitHub pull request (by number or URL; no argument lists open PRs)",
+})
