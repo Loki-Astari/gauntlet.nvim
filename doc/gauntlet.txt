@@ -1,0 +1,52 @@
+*gauntlet.txt*  Pull request review inside Neovim
+
+==============================================================================
+CONTENTS                                                    *gauntlet-contents*
+
+  1. Introduction .......... |gauntlet-introduction|
+  2. Installation .......... |gauntlet-installation|
+  3. Configuration ......... |gauntlet-configuration|
+  4. Commands .............. |gauntlet-commands|
+
+==============================================================================
+1. INTRODUCTION                                         *gauntlet-introduction*
+
+gauntlet.nvim runs a pull request through review without leaving the editor:
+fetch the PR, read the diff in Neovim, and have an agent CLI review it.
+
+This is an early skeleton - see |gauntlet-commands| for what exists today.
+
+==============================================================================
+2. INSTALLATION                                         *gauntlet-installation*
+
+With lazy.nvim: >lua
+
+    {
+      "Loki-Astari/gauntlet.nvim",
+      cmd = "Gauntlet",
+      opts = {},
+    }
+<
+Run `:checkhealth gauntlet` to verify the agent and `gh` CLIs are present.
+
+==============================================================================
+3. CONFIGURATION                                       *gauntlet-configuration*
+
+Defaults: >lua
+
+    require("gauntlet").setup({
+      agent = "claude",       -- symbolic name of the reviewing agent CLI
+      known_agents = {        -- symbolic name -> executable
+        claude = "claude",
+        codex  = "codex",
+      },
+      forge = "github",       -- PR source; github uses the `gh` CLI
+    })
+<
+==============================================================================
+4. COMMANDS                                                 *gauntlet-commands*
+
+                                                                    *:Gauntlet*
+:Gauntlet               Show the plugin version and resolved configuration.
+
+vim:tw=78:ts=8:ft=help:norl:

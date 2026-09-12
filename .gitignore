@@ -1,0 +1,8 @@
+# Editor swap/backup files
+*.swp
+*.swo
+*.swn
+*~
+
+.claude
+.prompt-history
