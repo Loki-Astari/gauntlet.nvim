@@ -7,6 +7,7 @@
 local render = require("gauntlet.render")
 local changes = require("gauntlet.changes")
 local comments = require("gauntlet.comments")
+local threads = require("gauntlet.threads")
 
 local M = {}
 
@@ -261,8 +262,28 @@ end
 ---@param thread table
 ---@param width integer  the widest the note may be
 ---@return table[] virt_lines
+--- What to write in the box's top border.
+---@param thread table
+---@return string
+local function box_label(thread)
+  if thread.origin ~= "github" then
+    return " comment "
+  end
+  local marks = {}
+  if thread.resolved then
+    table.insert(marks, "✓ resolved")
+  end
+  if thread.outdated then
+    table.insert(marks, "outdated")
+  end
+  if #marks > 0 then
+    return (" thread · %s "):format(table.concat(marks, ", "))
+  end
+  return " thread "
+end
+
 local function comment_box(thread, width)
-  local label = " comment "
+  local label = box_label(thread)
   local inner = math.max(width - 6, #label + 10)
 
   --- Break a line at spaces so it fits the box.  A comment is there to be
@@ -355,7 +376,24 @@ function annotate(state)
     return
   end
 
-  local threads = comments.for_file(state.comments, state.diff.file.path)
+  local path = state.diff.file.path
+  local drawn = comments.for_file(state.comments, path)
+
+  for _, thread in ipairs(threads.visible(state.threads or {})) do
+    if thread.path == path then
+      table.insert(drawn, thread)
+    end
+  end
+  if state.show_settled then
+    -- Resolved and outdated threads, revealed by `T`.  One without a line
+    -- cannot be drawn against the code at all.
+    for _, thread in ipairs(threads.hidden(state.threads or {})) do
+      if thread.path == path and thread.line then
+        table.insert(drawn, thread)
+      end
+    end
+  end
+
   for _, pane in ipairs({ state.diff.left, state.diff.right }) do
     if vim.api.nvim_buf_is_valid(pane.buf) then
       vim.api.nvim_buf_clear_namespace(pane.buf, COMMENT_NS, 0, -1)
@@ -365,7 +403,7 @@ function annotate(state)
           and vim.api.nvim_win_get_width(pane.win)
         or 60
 
-      for _, thread in ipairs(threads) do
+      for _, thread in ipairs(drawn) do
         if thread.side == pane.side and thread.line >= 1 and thread.line <= last then
           vim.api.nvim_buf_set_extmark(pane.buf, COMMENT_NS, thread.line - 1, 0, {
             sign_text = "●",
@@ -564,10 +602,21 @@ function M.render_sidebar(state)
   add("")
   add(("  Files (%d)"):format(#state.files), nil, "Comment")
 
-  local threads = comments.counts(state.comments or { threads = {} })
+  local open_count = comments.counts(state.comments or { threads = {} })
+  local settled = {}
+  for _, thread in ipairs(threads.visible(state.threads or {})) do
+    open_count[thread.path] = (open_count[thread.path] or 0) + 1
+  end
+  for _, thread in ipairs(threads.hidden(state.threads or {})) do
+    settled[thread.path] = (settled[thread.path] or 0) + 1
+  end
+
   for _, file in ipairs(state.files) do
     local counts = ("+%d −%d"):format(file.additions, file.deletions)
-    local mark = threads[file.path] and ("●%d "):format(threads[file.path]) or ""
+    local mark = open_count[file.path] and ("●%d "):format(open_count[file.path]) or ""
+    if settled[file.path] then
+      mark = mark .. ("✓%d "):format(settled[file.path])
+    end
     local room = SIDEBAR_WIDTH - 6 - #counts - vim.fn.strdisplaywidth(mark)
     local path = file.path
     if vim.fn.strdisplaywidth(path) > room then
@@ -619,6 +668,32 @@ function M.apply_keymaps(buf, state)
   map("<C-w>f", function()
     vim.api.nvim_set_current_win(state.sidebar_win)
   end, "jump to the file list")
+  map("T", function()
+    M.toggle_settled(state)
+  end, "show or hide resolved and outdated threads")
+end
+
+--- Draw the sidebar and whatever is on the right again.
+---@param state table
+function M.redraw(state)
+  annotate(state)
+  M.render_sidebar(state)
+end
+
+--- Show or hide the threads that are resolved or outdated.
+---@param state table
+function M.toggle_settled(state)
+  state.show_settled = not state.show_settled
+  M.redraw(state)
+
+  local settled = #threads.hidden(state.threads or {})
+  vim.notify(
+    state.show_settled
+        and ("gauntlet: showing %d resolved or outdated thread%s"):format(
+          settled, settled == 1 and "" or "s")
+      or "gauntlet: hiding resolved and outdated threads",
+    vim.log.levels.INFO
+  )
 end
 
 --- Close a review's tab page.  The worktree is left on disk so the review can
@@ -652,6 +727,10 @@ function M.review(ctx)
     current = 4,
     -- Whatever was written the last time this review was open.
     comments = comments.load(ctx.review),
+    -- GitHub's threads, fetched by prepare() and cached on disk.
+    threads = ctx.threads or threads.load(ctx.review),
+    -- Resolved and outdated threads start hidden, as they do on GitHub.
+    show_settled = false,
   })
 
   state.sidebar_buf = scratch({}, nil, nil)
