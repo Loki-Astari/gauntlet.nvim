@@ -38,12 +38,16 @@ end
 ---@param lines string[]
 ---@param name string|nil
 ---@param filetype string|nil
+---@param keep boolean|nil  survive its window closing
 ---@return integer buf
-local function scratch(lines, name, filetype)
+local function scratch(lines, name, filetype, keep)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "wipe"
+  -- A diff pane's buffer has to outlive its window: opening the comment
+  -- composer rebuilds the content area, and "wipe" would destroy the very
+  -- buffer being put back.
+  vim.bo[buf].bufhidden = keep and "hide" or "wipe"
   vim.bo[buf].swapfile = false
   if filetype then
     vim.bo[buf].filetype = filetype
@@ -71,8 +75,8 @@ local function claim_name(buf, name)
   pcall(vim.api.nvim_buf_set_name, buf, name)
 end
 
--- Defined below, but needed by show_diff above them.
-local annotate, add_comment, delete_comment
+-- Defined below, but needed above them.
+local annotate, add_comment, delete_comment, discard_panes
 
 --- Leave the tab page holding only the sidebar, and open one window beside it.
 ---@param state table
@@ -89,6 +93,35 @@ local function content_reset(state)
   return vim.api.nvim_get_current_win()
 end
 
+--- Build the content area: two panes side by side, and optionally a slot
+--- beneath them.
+---
+--- The horizontal split comes *first* on purpose.  Windows split from a row
+--- become siblings in that row, so splitting a pane afterwards would give a
+--- slot the width of that one pane.  Splitting first nests the two panes
+--- inside a column, which makes the slot their sibling and so as wide as both
+--- together.
+---@param state table
+---@param with_slot boolean
+---@return integer left, integer right, integer|nil slot
+local function layout(state, with_slot)
+  local left = content_reset(state)
+
+  local slot
+  if with_slot then
+    vim.api.nvim_set_current_win(left)
+    vim.cmd("belowright split")
+    slot = vim.api.nvim_get_current_win()
+  end
+
+  vim.api.nvim_set_current_win(left)
+  vim.cmd("rightbelow vsplit")
+  local right = vim.api.nvim_get_current_win()
+
+  vim.api.nvim_win_set_width(state.sidebar_win, SIDEBAR_WIDTH)
+  return left, right, slot
+end
+
 --- Settings shared by every window on the right-hand side.
 ---@param win integer
 local function content_window(win)
@@ -101,6 +134,7 @@ end
 --- Show the pull request's description.
 ---@param state table
 local function show_conversation(state)
+  discard_panes(state)
   state.diff = nil
   local win = content_reset(state)
   local buf = scratch(
@@ -124,24 +158,39 @@ end
 --- review must not be able to change the checkout.
 ---@param state table
 ---@param file table
+--- Throw away the scratch buffers a diff was using.
+--- They are kept alive across a window rebuild, so something has to end them.
+---@param state table
+function discard_panes(state)
+  if not state.diff then
+    return
+  end
+  for _, pane in ipairs({ state.diff.left, state.diff.right }) do
+    if vim.api.nvim_buf_is_valid(pane.buf) and vim.bo[pane.buf].buftype == "nofile" then
+      pcall(vim.api.nvim_buf_delete, pane.buf, { force = true })
+    end
+  end
+end
+
 local function show_diff(state, file)
+  discard_panes(state)
   local base_lines, existed = changes.base_lines(state.root, state.review.base, file.path)
   local filetype = vim.filetype.match({ filename = file.path }) or ""
 
-  local left = content_reset(state)
+  local left, right = layout(state, false)
   local base_buf = scratch(
     existed and base_lines or {},
     ("gauntlet://pr-%d/base/%s"):format(state.pr.number, file.path),
-    filetype
+    filetype,
+    true
   )
   vim.api.nvim_win_set_buf(left, base_buf)
   content_window(left)
 
-  vim.cmd("rightbelow vsplit")
-  local right = vim.api.nvim_get_current_win()
   local worktree_file = vim.fs.joinpath(state.review.worktree, file.path)
 
   local head_buf
+  vim.api.nvim_set_current_win(right)
   if vim.fn.filereadable(worktree_file) == 1 then
     vim.cmd.edit(vim.fn.fnameescape(worktree_file))
     head_buf = vim.api.nvim_get_current_buf()
@@ -149,7 +198,7 @@ local function show_diff(state, file)
     vim.bo[head_buf].readonly = true
   else
     -- A deleted file has no right-hand side.
-    head_buf = scratch({}, ("gauntlet://pr-%d/deleted/%s"):format(state.pr.number, file.path), filetype)
+    head_buf = scratch({}, ("gauntlet://pr-%d/deleted/%s"):format(state.pr.number, file.path), filetype, true)
     vim.api.nvim_win_set_buf(right, head_buf)
   end
   content_window(right)
@@ -159,7 +208,6 @@ local function show_diff(state, file)
       vim.cmd("diffthis")
     end)
   end
-  vim.api.nvim_win_set_width(state.sidebar_win, SIDEBAR_WIDTH)
 
   state.diff = {
     file = file,
@@ -187,6 +235,117 @@ end
 
 local COMMENT_NS = vim.api.nvim_create_namespace("GauntletComments")
 
+--- Colours for comments, set up so a colourscheme can override them: all are
+--- `default`, so anything the user defines wins.
+---
+--- They link to the floating-window groups because that is the effect wanted
+--- -- a note laid over the code rather than part of it -- and because every
+--- colourscheme gives those a background that stands apart from Normal.
+function M.highlights()
+  local links = {
+    GauntletComment = "NormalFloat",
+    GauntletCommentBorder = "FloatBorder",
+    GauntletCommentSign = "DiagnosticSignInfo",
+    GauntletCommentAuthor = "Title",
+  }
+  for group, target in pairs(links) do
+    vim.api.nvim_set_hl(0, group, { link = target, default = true })
+  end
+end
+
+--- Lay a comment thread out as a bordered note.
+---
+--- Comments were getting lost in the code they were about: dim virtual text
+--- among lines of source reads as more source.  A box has an outline whatever
+--- the colourscheme does, and the background makes it plainly not code.
+---@param thread table
+---@param width integer  the widest the note may be
+---@return table[] virt_lines
+local function comment_box(thread, width)
+  local label = " comment "
+  local inner = math.max(width - 6, #label + 10)
+
+  --- Break a line at spaces so it fits the box.  A comment is there to be
+  --- read, so it wraps; truncating would hide the point of it.
+  ---@param text string
+  ---@return string[]
+  local function wrap(text)
+    if vim.fn.strdisplaywidth(text) <= inner then
+      return { text }
+    end
+    local out, line = {}, ""
+    for word in text:gmatch("%S+") do
+      local candidate = line == "" and word or (line .. " " .. word)
+      if vim.fn.strdisplaywidth(candidate) <= inner then
+        line = candidate
+      else
+        if line ~= "" then
+          table.insert(out, line)
+        end
+        -- A single word longer than the box has to be cut somewhere.
+        while vim.fn.strdisplaywidth(word) > inner do
+          table.insert(out, vim.fn.strcharpart(word, 0, inner))
+          word = vim.fn.strcharpart(word, inner)
+        end
+        line = word
+      end
+    end
+    if line ~= "" then
+      table.insert(out, line)
+    end
+    return out
+  end
+
+  local body = {}
+  for _, comment in ipairs(thread.comments or {}) do
+    local author = comment.author or "you"
+    local mark = comment.state == "draft" and " (draft)" or ""
+    table.insert(body, { text = author .. mark, author = true })
+    for _, line in ipairs(vim.split(comment.body or "", "\n", { plain = true })) do
+      if line == "" then
+        table.insert(body, { text = "" })
+      else
+        for _, piece in ipairs(wrap(line)) do
+          table.insert(body, { text = piece })
+        end
+      end
+    end
+  end
+
+  -- Shrink the box to the longest line it actually holds.
+  local widest = #label
+  for _, line in ipairs(body) do
+    widest = math.max(widest, vim.fn.strdisplaywidth(line.text))
+  end
+  inner = math.min(inner, widest)
+
+  local indent = "  "
+  local lines = {}
+
+  table.insert(lines, {
+    { indent, "GauntletCommentBorder" },
+    { "╭─" .. label .. string.rep("─", inner - #label) .. "─╮", "GauntletCommentBorder" },
+  })
+
+  for _, line in ipairs(body) do
+    local text = line.text
+    local pad = string.rep(" ", math.max(inner - vim.fn.strdisplaywidth(text), 0))
+    table.insert(lines, {
+      { indent, "GauntletCommentBorder" },
+      { "│ ", "GauntletCommentBorder" },
+      { text .. pad, line.author and "GauntletCommentAuthor" or "GauntletComment" },
+      { " │", "GauntletCommentBorder" },
+    })
+  end
+
+  table.insert(lines, {
+    { indent, "GauntletCommentBorder" },
+    { "╰" .. string.rep("─", inner + 2) .. "╯", "GauntletCommentBorder" },
+  })
+
+  return lines
+end
+
 --- Draw the comment threads onto whichever file is on show.
 --- A marker in the sign column says a line carries one; the text itself goes
 --- underneath the line it is about, so the code stays where it was.
@@ -202,19 +361,17 @@ function annotate(state)
       vim.api.nvim_buf_clear_namespace(pane.buf, COMMENT_NS, 0, -1)
       local last = vim.api.nvim_buf_line_count(pane.buf)
 
+      local width = vim.api.nvim_win_is_valid(pane.win)
+          and vim.api.nvim_win_get_width(pane.win)
+        or 60
+
       for _, thread in ipairs(threads) do
         if thread.side == pane.side and thread.line >= 1 and thread.line <= last then
-          local body = {}
-          for _, comment in ipairs(thread.comments or {}) do
-            local who = comment.author and (comment.author .. ": ") or ""
-            for index, text in ipairs(vim.split(comment.body or "", "\n", { plain = true })) do
-              table.insert(body, { { "  ▸ " .. (index == 1 and who or "  ") .. text, "Comment" } })
-            end
-          end
           vim.api.nvim_buf_set_extmark(pane.buf, COMMENT_NS, thread.line - 1, 0, {
             sign_text = "●",
-            sign_hl_group = "DiagnosticInfo",
-            virt_lines = body,
+            sign_hl_group = "GauntletCommentSign",
+            line_hl_group = "GauntletCommentSign",
+            virt_lines = comment_box(thread, width),
           })
         end
       end
@@ -249,9 +406,37 @@ end
 ---@param state table
 ---@param anchor table
 local function compose(state, anchor)
-  vim.cmd("belowright split")
-  local win = vim.api.nvim_get_current_win()
+  -- Rebuild the content area with a slot underneath both panes.  The slot has
+  -- to be created before the panes are split apart, or it would only be as
+  -- wide as one of them -- see layout().
+  local keep = {
+    left = state.diff.left.buf,
+    right = state.diff.right.buf,
+    cursor = {},
+  }
+  for _, side in ipairs({ "left", "right" }) do
+    local pane = state.diff[side]
+    if vim.api.nvim_win_is_valid(pane.win) then
+      keep.cursor[side] = vim.api.nvim_win_get_cursor(pane.win)
+    end
+  end
+
+  local left, right, win = layout(state, true)
+  for side, pane_win in pairs({ left = left, right = right }) do
+    vim.api.nvim_win_set_buf(pane_win, keep[side])
+    content_window(pane_win)
+    state.diff[side].win = pane_win
+    if keep.cursor[side] then
+      pcall(vim.api.nvim_win_set_cursor, pane_win, keep.cursor[side])
+    end
+    vim.api.nvim_win_call(pane_win, function()
+      vim.cmd("diffthis")
+    end)
+  end
+  annotate(state)
+
   vim.api.nvim_win_set_height(win, 8)
+  vim.api.nvim_set_current_win(win)
 
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_win_set_buf(win, buf)
@@ -440,6 +625,7 @@ end
 --- be picked up again, offline; :GauntletDiscard is what removes it.
 ---@param state table
 function M.close(state)
+  discard_panes(state)
   reviews[state.tab] = nil
   if #vim.api.nvim_list_tabpages() > 1 then
     pcall(vim.cmd, "tabclose")
@@ -489,6 +675,7 @@ function M.review(ctx)
   vim.wo[win].spell = false
   vim.wo[win].signcolumn = "no"
 
+  M.highlights()
   M.render_sidebar(state)
   M.apply_keymaps(state.sidebar_buf, state)
   vim.keymap.set("n", "<CR>", function()
@@ -540,7 +727,7 @@ end
 function M.compose_review(state, event, drafts)
   local github = require("gauntlet.github")
 
-  vim.cmd("belowright split")
+  vim.cmd("botright split")
   local win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_height(win, 10)
 

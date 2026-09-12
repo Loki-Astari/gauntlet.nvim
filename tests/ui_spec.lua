@@ -57,11 +57,12 @@ describe("gauntlet.ui", function()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
   end
 
-  --- The windows on the right, left to right.
+  --- The diff windows on the right, left to right.  The comment composer is
+  --- not one of them, so it is excluded by its buffer type.
   local function panes()
     local out = {}
     for _, win in ipairs(vim.api.nvim_tabpage_list_wins(state.tab)) do
-      if win ~= state.sidebar_win then
+      if win ~= state.sidebar_win and vim.bo[vim.api.nvim_win_get_buf(win)].buftype ~= "acwrite" then
         table.insert(out, win)
       end
     end
@@ -220,14 +221,96 @@ describe("gauntlet.ui", function()
     it("opens a place to write, under the diff", function()
       select_entry("change.txt")
       press("c", 2)
-      assert.is_truthy(composer())
+      assert.is_true(composer() ~= nil)
       assert.equals("markdown", vim.bo[vim.api.nvim_win_get_buf(composer())].filetype)
+    end)
+
+    it("spans both diff panes, not just one", function()
+      select_entry("change.txt")
+      press("c", 2)
+      local win = assert(composer(), "no composer opened")
+
+      local left, right = panes()[1], panes()[2]
+      local left_col = vim.api.nvim_win_get_position(left)[2]
+      local widths = vim.api.nvim_win_get_width(left) + vim.api.nvim_win_get_width(right)
+
+      -- Flush with the left pane, and as wide as the two together (plus the
+      -- separator between them).
+      assert.equals(left_col, vim.api.nvim_win_get_position(win)[2])
+      assert.is_true(vim.api.nvim_win_get_width(win) >= widths)
+    end)
+
+    it("leaves the sidebar alone while composing", function()
+      local width = vim.api.nvim_win_get_width(state.sidebar_win)
+      select_entry("change.txt")
+      press("c", 2)
+      assert.equals(width, vim.api.nvim_win_get_width(state.sidebar_win))
+      assert.is_true(vim.api.nvim_win_get_position(composer())[2] > 0)
+    end)
+
+    it("keeps both sides of the diff in view while composing", function()
+      select_entry("change.txt")
+      press("c", 2)
+      assert.equals(2, #panes())
+      for _, win in ipairs(panes()) do
+        assert.is_true(vim.wo[win].diff)
+      end
+    end)
+
+    it("draws the comment as a bordered note", function()
+      write_comment("needs a test")
+      local ns = vim.api.nvim_create_namespace("GauntletComments")
+      local marks = vim.api.nvim_buf_get_extmarks(
+        vim.api.nvim_win_get_buf(panes()[2]), ns, 0, -1, { details = true })
+      local drawn = vim.inspect(marks[1][4].virt_lines)
+
+      -- A box reads as not-code whatever the colourscheme does, which dim
+      -- virtual text among source lines did not.
+      assert.is_truthy(drawn:find("╭", 1, true))
+      assert.is_truthy(drawn:find("╰", 1, true))
+      assert.is_truthy(drawn:find("GauntletCommentBorder", 1, true))
+      assert.is_truthy(drawn:find("GauntletComment", 1, true))
+    end)
+
+    it("wraps a long comment instead of hiding the end of it", function()
+      local long = "this comment is deliberately far too long to fit inside the "
+        .. "width of a single diff pane and so it has to be broken across "
+        .. "several lines rather than cut short"
+      write_comment(long)
+
+      local ns = vim.api.nvim_create_namespace("GauntletComments")
+      local marks = vim.api.nvim_buf_get_extmarks(
+        vim.api.nvim_win_get_buf(panes()[2]), ns, 0, -1, { details = true })
+
+      local text = ""
+      for _, line in ipairs(marks[1][4].virt_lines) do
+        for _, chunk in ipairs(line) do
+          text = text .. chunk[1]
+        end
+      end
+
+      assert.is_nil(text:find("…", 1, true), "the comment was truncated")
+      -- Every word survives, in order, across however many lines it took.
+      for word in long:gmatch("%S+") do
+        assert.is_truthy(text:find(word, 1, true), "lost the word: " .. word)
+      end
+      assert.is_true(#marks[1][4].virt_lines > 4)
+    end)
+
+    it("defines its highlights so a colourscheme can override them", function()
+      ui.highlights()
+      for _, group in ipairs({
+        "GauntletComment", "GauntletCommentBorder", "GauntletCommentSign",
+      }) do
+        local hl = vim.api.nvim_get_hl(0, { name = group })
+        assert.is_truthy(next(hl), group .. " is not defined")
+      end
     end)
 
     it("keeps what was written, and closes", function()
       write_comment("needs a test for the empty case")
 
-      assert.is_nil(composer())
+      assert.is_true(composer() == nil)
       local stored = comments.load(state.review)
       assert.equals(1, #stored.threads)
       assert.equals("change.txt", stored.threads[1].path)
@@ -250,14 +333,14 @@ describe("gauntlet.ui", function()
       -- Saying so now beats a puzzling rejection at submission time.
       select_entry("big.txt")
       press("c", 1)
-      assert.is_nil(composer())
+      assert.is_true(composer() == nil)
       assert.same({}, comments.load(state.review).threads)
     end)
 
     it("allows a line that is in the diff", function()
       select_entry("big.txt")
       press("c", 20)
-      assert.is_truthy(composer())
+      assert.is_true(composer() ~= nil)
     end)
 
     it("marks the line it is on, and shows the text under it", function()

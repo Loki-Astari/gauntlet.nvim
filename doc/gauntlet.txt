@@ -153,8 +153,24 @@ it is opened non-modifiable: reviewing must not be able to change a checkout.
 every editing habit works: `:w` keeps the comment, `:q` throws it away.  The
 code being commented on stays in view above.
 
-A line carrying a comment is marked in the sign column, with the text shown
-underneath it.  The file list counts them, so `●2` beside a file means two.
+A line carrying a comment is marked in the sign column and highlighted, and
+the comment is drawn underneath it as a bordered note, wrapped to fit.  The
+file list counts them, so `●2` beside a file means two.
+
+                                                        *gauntlet-highlights*
+The note's colours are these groups, each defined only as a default, so
+anything a colourscheme or your config sets wins:
+
+    GauntletComment          the comment text     (NormalFloat)
+    GauntletCommentBorder    the box around it    (FloatBorder)
+    GauntletCommentAuthor    who wrote it         (Title)
+    GauntletCommentSign      the marker and line  (DiagnosticSignInfo)
+
+They link to the floating-window groups because that is the effect wanted: a
+note laid over the code rather than another part of it.
+
+The writing buffer spans both diff panes, so a comment has the full width of
+the file to be written in, and both sides of the diff stay in view above it.
 
 Comments anchor to a line *and a side*: the left-hand pane is the base, the
 right-hand pane the pull request.  GitHub will only accept a comment on a line

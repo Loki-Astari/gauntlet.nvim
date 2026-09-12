@@ -63,9 +63,24 @@ cannot change a checkout.
 
 ### Comments
 
-`c` opens a buffer under the diff — an ordinary one, so `:w` keeps the comment
-and `:q` throws it away. Commented lines are marked in the sign column with
-the text underneath, and the file list counts them (`●2`).
+`c` opens a buffer spanning both diff panes — an ordinary one, so `:w` keeps
+the comment and `:q` throws it away, and both sides of the diff stay in view
+above it. A commented line is marked and highlighted, with the comment drawn
+beneath it as a bordered note:
+
+```
+ 20 │ local function unquote(path)
+    │   ╭─ comment ──────────────────────────────────╮
+    │   │ you (draft)                                │
+    │   │ this needs a note about why threads rather │
+    │   │ than comments, because a reply has to be   │
+    │   │ able to join one later                     │
+    │   ╰────────────────────────────────────────────╯
+```
+
+The file list counts them (`●2`). Colours come from `GauntletComment`,
+`GauntletCommentBorder`, `GauntletCommentAuthor` and `GauntletCommentSign`,
+all defined as defaults so your colourscheme wins.
 
 Comments anchor to a line *and* a side (left is the base, right is the PR).
 GitHub only accepts comments on lines that are part of the diff, so `c`
