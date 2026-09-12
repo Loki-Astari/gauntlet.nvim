@@ -4,13 +4,32 @@ local render = require("gauntlet.render")
 
 local M = {}
 
---- Open the read-only conversation view for a pull request, in its own tab
---- page so the user's existing window layout is left alone.
+--- True for the empty, unnamed, unmodified buffer Neovim starts with.
+---@param buf integer
+local function is_startup_scratch(buf)
+  return vim.api.nvim_buf_get_name(buf) == ""
+    and vim.bo[buf].buftype == ""
+    and not vim.bo[buf].modified
+    and vim.api.nvim_buf_line_count(buf) == 1
+    and vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] == ""
+end
+
+--- Open the read-only conversation view for a pull request.
+---
+--- It gets a tab page of its own so the user's window layout is left alone --
+--- unless the only thing on screen is Neovim's own empty starting buffer, in
+--- which case that is taken over.  `vig` starts Neovim with nothing loaded, so
+--- a new tab would strand a blank [No Name] tab beside the review.
 ---@param pr table
 ---@param repo table { owner, repo }
 ---@return integer buf
 function M.conversation(pr, repo)
-  vim.cmd("tabnew")
+  local alone = #vim.api.nvim_tabpage_list_wins(0) == 1
+    and is_startup_scratch(vim.api.nvim_get_current_buf())
+  if not alone then
+    vim.cmd("tabnew")
+  end
+
   local buf = vim.api.nvim_get_current_buf()
   local win = vim.api.nvim_get_current_win()
 
@@ -30,17 +49,37 @@ function M.conversation(pr, repo)
   vim.wo[win].relativenumber = false
   vim.wo[win].spell = false
 
-  -- A stable, descriptive name; `silent!` because reopening the same PR would
-  -- otherwise collide with the wiped buffer's name.
-  pcall(vim.api.nvim_buf_set_name, buf, ("gauntlet://%s/%s/pull/%d"):format(repo.owner, repo.repo, pr.number))
+  -- Tab and buffer labels are drawn from the tail of the buffer's name, both
+  -- by Neovim's own tabline and by bufferline-style plugins, so the tail is
+  -- the title and the leading path is only there to keep the name unique:
+  -- two repositories can each have a pull request #1.
+  -- `pcall` because a name still in use raises, and a nameless view beats a
+  -- failed one.
+  local title = M.title(pr)
+  pcall(
+    vim.api.nvim_buf_set_name,
+    buf,
+    ("%s/%s/%s"):format(repo.owner, repo.repo, title)
+  )
+  vim.t.gauntlet_title = title
 
-  vim.keymap.set("n", "q", "<cmd>tabclose<cr>", {
+  -- `quit` rather than `tabclose`: it closes the review's window, which closes
+  -- its tab, and ends Neovim when the review was all that was open -- which is
+  -- what `vig` leaves behind.
+  vim.keymap.set("n", "q", "<cmd>quit<cr>", {
     buffer = buf,
     nowait = true,
     desc = "Gauntlet: close the pull request view",
   })
 
   return buf
+end
+
+--- The label a review is shown under.
+---@param pr table
+---@return string
+function M.title(pr)
+  return ("PR Review %d"):format(pr.number)
 end
 
 --- Let the user choose from the open pull requests.

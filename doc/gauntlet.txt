@@ -88,10 +88,22 @@ $GAUNTLET_NVIM overrides the Neovim executable vig uses.
 ==============================================================================
 6. THE REVIEW VIEW                                            *gauntlet-review*
 
-A review opens in a new tab page, leaving your window layout untouched.  The
-buffer is read-only, 'buftype' "nofile", and 'filetype' "markdown".
+A review is labelled "PR Review {id}".  Neovim's own tabline and bufferline
+style plugins both label from the tail of a buffer's name, so that is the tail
+of the name; the repository is kept in front of it to stay unique, since two
+repositories can each have a pull request #1.  The tab also carries the label
+in the tab-scoped variable `t:gauntlet_title`.
 
-    q                   Close the review.
+The review takes a tab page of its own, leaving your window layout untouched.
+The exception is when the only thing on screen is Neovim's own empty starting
+buffer -- which is what |vig| leaves behind -- and the review takes that over
+instead, rather than stranding a blank "[No Name]" tab beside itself.
+
+The buffer is read-only, 'buftype' "nofile", and 'filetype' "markdown".
+
+    q                   Close the review.  This closes its window, and so its
+                        tab page; if the review was all that was open, as
+                        after `vig {id}`, Neovim exits.
 
 ==============================================================================
 7. ERRORS                                                     *gauntlet-errors*

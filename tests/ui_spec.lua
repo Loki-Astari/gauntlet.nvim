@@ -16,15 +16,48 @@ describe("gauntlet.ui", function()
     body = "A description.",
   }
 
-  after_each(function()
+  --- Start from one tab holding the sort of empty buffer Neovim opens with.
+  local function fresh_tab()
     while #vim.api.nvim_list_tabpages() > 1 do
       vim.cmd("tabclose")
     end
-  end)
+    vim.cmd("enew!")
+  end
+
+  before_each(fresh_tab)
+  after_each(fresh_tab)
 
   describe("conversation", function()
-    it("opens in its own tab page", function()
+    it("takes over the empty starting buffer rather than opening a tab", function()
+      -- What `vig` leaves behind: nothing loaded, one window, one tab.
       local before = #vim.api.nvim_list_tabpages()
+      local buf = ui.conversation(pr, repo)
+
+      assert.equals(before, #vim.api.nvim_list_tabpages())
+      assert.equals(buf, vim.api.nvim_get_current_buf())
+
+      -- ...and no blank [No Name] buffer stranded beside it.
+      local blank = 0
+      for _, b in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.bo[b].buflisted and vim.api.nvim_buf_get_name(b) == "" then
+          blank = blank + 1
+        end
+      end
+      assert.equals(0, blank)
+    end)
+
+    it("opens its own tab when there is work on screen", function()
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, { "some work in progress" })
+      local before = #vim.api.nvim_list_tabpages()
+
+      ui.conversation(pr, repo)
+      assert.equals(before + 1, #vim.api.nvim_list_tabpages())
+    end)
+
+    it("opens its own tab when the window is shared", function()
+      vim.cmd("split")
+      local before = #vim.api.nvim_list_tabpages()
+
       ui.conversation(pr, repo)
       assert.equals(before + 1, #vim.api.nvim_list_tabpages())
     end)
@@ -38,9 +71,21 @@ describe("gauntlet.ui", function()
       assert.is_false(vim.bo[buf].swapfile)
     end)
 
-    it("names the buffer after the pull request", function()
+    it("titles the view PR Review <id>", function()
+      assert.equals("PR Review 142", ui.title(pr))
+    end)
+
+    it("labels the tab with the title", function()
+      -- Both Neovim's tabline and bufferline-style plugins label from the
+      -- tail of the buffer name, so that is what has to read well.
       local buf = ui.conversation(pr, repo)
-      assert.is_truthy(vim.api.nvim_buf_get_name(buf):find("o/r/pull/142", 1, true))
+      assert.equals("PR Review 142", vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buf), ":t"))
+      assert.equals("PR Review 142", vim.t.gauntlet_title)
+    end)
+
+    it("keeps the repository in the buffer name, so two #1s can coexist", function()
+      local name = vim.api.nvim_buf_get_name(ui.conversation(pr, repo))
+      assert.is_truthy(name:find("o/r/PR Review 142", 1, true))
     end)
 
     it("maps q to close the view", function()

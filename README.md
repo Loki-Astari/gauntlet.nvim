@@ -35,7 +35,10 @@ A Neovim user interface for reviewing GitHub pull requests locally.
 | `:Gauntlet https://github.com/user/repo/pull/142` | Review that pull request |
 | `:Gauntlet` | Choose from the open pull requests |
 
-The review opens in a new tab page. Press `q` to close it.
+The review opens in a tab page of its own, labelled `PR Review <id>`. Press
+`q` to close it. If Neovim was started purely to show the review — as `vig`
+does — it takes over the empty starting buffer instead of opening a second
+tab, and `q` exits.
 
 `:Gauntlet` reports an error if you are not inside a git repository, if there is
 no *open* pull request with that number, or if a URL names a repository that is
