@@ -8,5 +8,10 @@
 local plenary_dir = os.getenv("PLENARY_DIR")
   or (vim.fn.stdpath("data") .. "/lazy/plenary.nvim")
 
+-- Resolve the plugin root from this file rather than from the working
+-- directory: a test that changes directory must still be able to require the
+-- plugin's own modules.
+local root = vim.fs.dirname(vim.fs.dirname(debug.getinfo(1, "S").source:sub(2)))
+
 vim.opt.runtimepath:prepend(plenary_dir)
-vim.opt.runtimepath:prepend(".")
+vim.opt.runtimepath:prepend(vim.fn.fnamemodify(root, ":p:h"))

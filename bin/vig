@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# vig - "nvim gauntlet".  Review a GitHub pull request from the terminal.
+#
+#   vig                 list this repository's open pull requests and exit
+#   vig <ID>            review pull request <ID>
+#   vig <URL>           review the pull request at a github.com/.../pull/<ID> URL
+#
+# Every check runs headlessly first, so a bad argument prints an error and
+# Neovim is never started.
+#
+# Install by putting this directory on your PATH, or with an alias:
+#   alias vig='~/.local/share/nvim/lazy/gauntlet.nvim/bin/vig'
+
+set -u
+
+# Resolve this script through any symlinks, so PATH installs work.
+source_path=${BASH_SOURCE[0]}
+while [ -L "$source_path" ]; do
+    dir=$(cd -P "$(dirname "$source_path")" && pwd)
+    source_path=$(readlink "$source_path")
+    [[ $source_path != /* ]] && source_path=$dir/$source_path
+done
+GAUNTLET_ROOT=$(cd -P "$(dirname "$source_path")/.." && pwd)
+export GAUNTLET_ROOT
+
+NVIM=${GAUNTLET_NVIM:-nvim}
+cli=$GAUNTLET_ROOT/lua/gauntlet/cli.lua
+
+if ! command -v "$NVIM" >/dev/null 2>&1; then
+    echo "vig: $NVIM not found on PATH" >&2
+    exit 1
+fi
+
+if [ "$#" -gt 1 ]; then
+    echo "vig: expected at most one argument, a pull request number or URL" >&2
+    exit 2
+fi
+
+# No argument: just print the list.  Neovim is not started.
+if [ "$#" -eq 0 ]; then
+    exec "$NVIM" --headless -l "$cli" list
+fi
+
+# Validate and fetch before starting anything interactive.  On failure the
+# error is already on stderr; pass the exit status straight through.
+preload=$("$NVIM" --headless -l "$cli" review "$1") || exit $?
+
+GAUNTLET_PRELOAD=$preload exec "$NVIM" -c "lua require('gauntlet').open_preload()"
