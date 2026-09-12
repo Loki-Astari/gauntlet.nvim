@@ -6,6 +6,7 @@
 -- `gd` and `K` all work on a non-modifiable buffer.
 local render = require("gauntlet.render")
 local changes = require("gauntlet.changes")
+local comments = require("gauntlet.comments")
 
 local M = {}
 
@@ -37,12 +38,16 @@ end
 ---@param lines string[]
 ---@param name string|nil
 ---@param filetype string|nil
+---@param keep boolean|nil  survive its window closing
 ---@return integer buf
-local function scratch(lines, name, filetype)
+local function scratch(lines, name, filetype, keep)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "wipe"
+  -- A diff pane's buffer has to outlive its window: opening the comment
+  -- composer rebuilds the content area, and "wipe" would destroy the very
+  -- buffer being put back.
+  vim.bo[buf].bufhidden = keep and "hide" or "wipe"
   vim.bo[buf].swapfile = false
   if filetype then
     vim.bo[buf].filetype = filetype
@@ -70,6 +75,9 @@ local function claim_name(buf, name)
   pcall(vim.api.nvim_buf_set_name, buf, name)
 end
 
+-- Defined below, but needed above them.
+local annotate, add_comment, delete_comment, discard_panes
+
 --- Leave the tab page holding only the sidebar, and open one window beside it.
 ---@param state table
 ---@return integer win
@@ -85,6 +93,35 @@ local function content_reset(state)
   return vim.api.nvim_get_current_win()
 end
 
+--- Build the content area: two panes side by side, and optionally a slot
+--- beneath them.
+---
+--- The horizontal split comes *first* on purpose.  Windows split from a row
+--- become siblings in that row, so splitting a pane afterwards would give a
+--- slot the width of that one pane.  Splitting first nests the two panes
+--- inside a column, which makes the slot their sibling and so as wide as both
+--- together.
+---@param state table
+---@param with_slot boolean
+---@return integer left, integer right, integer|nil slot
+local function layout(state, with_slot)
+  local left = content_reset(state)
+
+  local slot
+  if with_slot then
+    vim.api.nvim_set_current_win(left)
+    vim.cmd("belowright split")
+    slot = vim.api.nvim_get_current_win()
+  end
+
+  vim.api.nvim_set_current_win(left)
+  vim.cmd("rightbelow vsplit")
+  local right = vim.api.nvim_get_current_win()
+
+  vim.api.nvim_win_set_width(state.sidebar_win, SIDEBAR_WIDTH)
+  return left, right, slot
+end
+
 --- Settings shared by every window on the right-hand side.
 ---@param win integer
 local function content_window(win)
@@ -97,6 +134,8 @@ end
 --- Show the pull request's description.
 ---@param state table
 local function show_conversation(state)
+  discard_panes(state)
+  state.diff = nil
   local win = content_reset(state)
   local buf = scratch(
     render.conversation(state.pr),
@@ -119,24 +158,39 @@ end
 --- review must not be able to change the checkout.
 ---@param state table
 ---@param file table
+--- Throw away the scratch buffers a diff was using.
+--- They are kept alive across a window rebuild, so something has to end them.
+---@param state table
+function discard_panes(state)
+  if not state.diff then
+    return
+  end
+  for _, pane in ipairs({ state.diff.left, state.diff.right }) do
+    if vim.api.nvim_buf_is_valid(pane.buf) and vim.bo[pane.buf].buftype == "nofile" then
+      pcall(vim.api.nvim_buf_delete, pane.buf, { force = true })
+    end
+  end
+end
+
 local function show_diff(state, file)
+  discard_panes(state)
   local base_lines, existed = changes.base_lines(state.root, state.review.base, file.path)
   local filetype = vim.filetype.match({ filename = file.path }) or ""
 
-  local left = content_reset(state)
+  local left, right = layout(state, false)
   local base_buf = scratch(
     existed and base_lines or {},
     ("gauntlet://pr-%d/base/%s"):format(state.pr.number, file.path),
-    filetype
+    filetype,
+    true
   )
   vim.api.nvim_win_set_buf(left, base_buf)
   content_window(left)
 
-  vim.cmd("rightbelow vsplit")
-  local right = vim.api.nvim_get_current_win()
   local worktree_file = vim.fs.joinpath(state.review.worktree, file.path)
 
   local head_buf
+  vim.api.nvim_set_current_win(right)
   if vim.fn.filereadable(worktree_file) == 1 then
     vim.cmd.edit(vim.fn.fnameescape(worktree_file))
     head_buf = vim.api.nvim_get_current_buf()
@@ -144,7 +198,7 @@ local function show_diff(state, file)
     vim.bo[head_buf].readonly = true
   else
     -- A deleted file has no right-hand side.
-    head_buf = scratch({}, ("gauntlet://pr-%d/deleted/%s"):format(state.pr.number, file.path), filetype)
+    head_buf = scratch({}, ("gauntlet://pr-%d/deleted/%s"):format(state.pr.number, file.path), filetype, true)
     vim.api.nvim_win_set_buf(right, head_buf)
   end
   content_window(right)
@@ -154,11 +208,320 @@ local function show_diff(state, file)
       vim.cmd("diffthis")
     end)
   end
-  vim.api.nvim_win_set_width(state.sidebar_win, SIDEBAR_WIDTH)
+
+  state.diff = {
+    file = file,
+    -- Which lines GitHub would accept a comment on.  Worked out once per
+    -- file, from local git, so it is there offline too.
+    hunks = changes.hunks(state.root, state.review.base, state.review.head, file.path),
+    left = { win = left, buf = base_buf, side = "LEFT" },
+    right = { win = right, buf = head_buf, side = "RIGHT" },
+  }
 
   M.apply_keymaps(base_buf, state)
   M.apply_keymaps(head_buf, state)
+  for _, buf in ipairs({ base_buf, head_buf }) do
+    vim.keymap.set("n", "c", function()
+      add_comment(state)
+    end, { buffer = buf, nowait = true, desc = "Gauntlet: comment on this line" })
+    vim.keymap.set("n", "dc", function()
+      delete_comment(state)
+    end, { buffer = buf, nowait = true, desc = "Gauntlet: delete the comment on this line" })
+  end
+
+  annotate(state)
   vim.api.nvim_set_current_win(right)
+end
+
+local COMMENT_NS = vim.api.nvim_create_namespace("GauntletComments")
+
+--- Colours for comments, set up so a colourscheme can override them: all are
+--- `default`, so anything the user defines wins.
+---
+--- They link to the floating-window groups because that is the effect wanted
+--- -- a note laid over the code rather than part of it -- and because every
+--- colourscheme gives those a background that stands apart from Normal.
+function M.highlights()
+  local links = {
+    GauntletComment = "NormalFloat",
+    GauntletCommentBorder = "FloatBorder",
+    GauntletCommentSign = "DiagnosticSignInfo",
+    GauntletCommentAuthor = "Title",
+  }
+  for group, target in pairs(links) do
+    vim.api.nvim_set_hl(0, group, { link = target, default = true })
+  end
+end
+
+--- Lay a comment thread out as a bordered note.
+---
+--- Comments were getting lost in the code they were about: dim virtual text
+--- among lines of source reads as more source.  A box has an outline whatever
+--- the colourscheme does, and the background makes it plainly not code.
+---@param thread table
+---@param width integer  the widest the note may be
+---@return table[] virt_lines
+local function comment_box(thread, width)
+  local label = " comment "
+  local inner = math.max(width - 6, #label + 10)
+
+  --- Break a line at spaces so it fits the box.  A comment is there to be
+  --- read, so it wraps; truncating would hide the point of it.
+  ---@param text string
+  ---@return string[]
+  local function wrap(text)
+    if vim.fn.strdisplaywidth(text) <= inner then
+      return { text }
+    end
+    local out, line = {}, ""
+    for word in text:gmatch("%S+") do
+      local candidate = line == "" and word or (line .. " " .. word)
+      if vim.fn.strdisplaywidth(candidate) <= inner then
+        line = candidate
+      else
+        if line ~= "" then
+          table.insert(out, line)
+        end
+        -- A single word longer than the box has to be cut somewhere.
+        while vim.fn.strdisplaywidth(word) > inner do
+          table.insert(out, vim.fn.strcharpart(word, 0, inner))
+          word = vim.fn.strcharpart(word, inner)
+        end
+        line = word
+      end
+    end
+    if line ~= "" then
+      table.insert(out, line)
+    end
+    return out
+  end
+
+  local body = {}
+  for _, comment in ipairs(thread.comments or {}) do
+    local author = comment.author or "you"
+    local mark = comment.state == "draft" and " (draft)" or ""
+    table.insert(body, { text = author .. mark, author = true })
+    for _, line in ipairs(vim.split(comment.body or "", "\n", { plain = true })) do
+      if line == "" then
+        table.insert(body, { text = "" })
+      else
+        for _, piece in ipairs(wrap(line)) do
+          table.insert(body, { text = piece })
+        end
+      end
+    end
+  end
+
+  -- Shrink the box to the longest line it actually holds.
+  local widest = #label
+  for _, line in ipairs(body) do
+    widest = math.max(widest, vim.fn.strdisplaywidth(line.text))
+  end
+  inner = math.min(inner, widest)
+
+  local indent = "  "
+  local lines = {}
+
+  table.insert(lines, {
+    { indent, "GauntletCommentBorder" },
+    { "╭─" .. label .. string.rep("─", inner - #label) .. "─╮", "GauntletCommentBorder" },
+  })
+
+  for _, line in ipairs(body) do
+    local text = line.text
+    local pad = string.rep(" ", math.max(inner - vim.fn.strdisplaywidth(text), 0))
+    table.insert(lines, {
+      { indent, "GauntletCommentBorder" },
+      { "│ ", "GauntletCommentBorder" },
+      { text .. pad, line.author and "GauntletCommentAuthor" or "GauntletComment" },
+      { " │", "GauntletCommentBorder" },
+    })
+  end
+
+  table.insert(lines, {
+    { indent, "GauntletCommentBorder" },
+    { "╰" .. string.rep("─", inner + 2) .. "╯", "GauntletCommentBorder" },
+  })
+
+  return lines
+end
+
+--- Draw the comment threads onto whichever file is on show.
+--- A marker in the sign column says a line carries one; the text itself goes
+--- underneath the line it is about, so the code stays where it was.
+---@param state table
+function annotate(state)
+  if not state.diff then
+    return
+  end
+
+  local threads = comments.for_file(state.comments, state.diff.file.path)
+  for _, pane in ipairs({ state.diff.left, state.diff.right }) do
+    if vim.api.nvim_buf_is_valid(pane.buf) then
+      vim.api.nvim_buf_clear_namespace(pane.buf, COMMENT_NS, 0, -1)
+      local last = vim.api.nvim_buf_line_count(pane.buf)
+
+      local width = vim.api.nvim_win_is_valid(pane.win)
+          and vim.api.nvim_win_get_width(pane.win)
+        or 60
+
+      for _, thread in ipairs(threads) do
+        if thread.side == pane.side and thread.line >= 1 and thread.line <= last then
+          vim.api.nvim_buf_set_extmark(pane.buf, COMMENT_NS, thread.line - 1, 0, {
+            sign_text = "●",
+            sign_hl_group = "GauntletCommentSign",
+            line_hl_group = "GauntletCommentSign",
+            virt_lines = comment_box(thread, width),
+          })
+        end
+      end
+    end
+  end
+end
+
+--- Which side of the diff a window is showing, and where its cursor is.
+---@param state table
+---@return table|nil anchor { path, side, line, commit_id }
+local function anchor_here(state)
+  if not state.diff then
+    return nil
+  end
+  local win = vim.api.nvim_get_current_win()
+  for _, pane in ipairs({ state.diff.left, state.diff.right }) do
+    if pane.win == win then
+      return {
+        path = state.diff.file.path,
+        side = pane.side,
+        line = vim.api.nvim_win_get_cursor(win)[1],
+        commit_id = state.review.head,
+      }
+    end
+  end
+  return nil
+end
+
+--- Open a buffer to write a comment in, under the diff.
+--- An ordinary buffer, so every editing habit works: `:w` keeps it, `:q`
+--- throws it away.
+---@param state table
+---@param anchor table
+local function compose(state, anchor)
+  -- Rebuild the content area with a slot underneath both panes.  The slot has
+  -- to be created before the panes are split apart, or it would only be as
+  -- wide as one of them -- see layout().
+  local keep = {
+    left = state.diff.left.buf,
+    right = state.diff.right.buf,
+    cursor = {},
+  }
+  for _, side in ipairs({ "left", "right" }) do
+    local pane = state.diff[side]
+    if vim.api.nvim_win_is_valid(pane.win) then
+      keep.cursor[side] = vim.api.nvim_win_get_cursor(pane.win)
+    end
+  end
+
+  local left, right, win = layout(state, true)
+  for side, pane_win in pairs({ left = left, right = right }) do
+    vim.api.nvim_win_set_buf(pane_win, keep[side])
+    content_window(pane_win)
+    state.diff[side].win = pane_win
+    if keep.cursor[side] then
+      pcall(vim.api.nvim_win_set_cursor, pane_win, keep.cursor[side])
+    end
+    vim.api.nvim_win_call(pane_win, function()
+      vim.cmd("diffthis")
+    end)
+  end
+  annotate(state)
+
+  vim.api.nvim_win_set_height(win, 8)
+  vim.api.nvim_set_current_win(win)
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(win, buf)
+  -- "acwrite" so that :w reaches BufWriteCmd instead of trying to write a file.
+  vim.bo[buf].buftype = "acwrite"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].filetype = "markdown"
+  vim.wo[win].wrap = true
+  vim.wo[win].linebreak = true
+  vim.wo[win].number = false
+  vim.wo[win].winfixheight = true
+  claim_name(buf, ("gauntlet://pr-%d/comment/%s:%s:%d"):format(
+    state.pr.number, anchor.path, anchor.side:lower(), anchor.line))
+
+  vim.api.nvim_create_autocmd("BufWriteCmd", {
+    buffer = buf,
+    desc = "Gauntlet: keep this comment",
+    callback = function()
+      local body = vim.trim(table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n"))
+      if body == "" then
+        vim.notify("gauntlet: nothing written, so nothing kept", vim.log.levels.WARN)
+        return
+      end
+
+      comments.add(state.comments, anchor, body)
+      local ok, err = comments.save(state.review, state.comments)
+      if not ok then
+        vim.notify("gauntlet: could not keep the comment: " .. err, vim.log.levels.ERROR)
+        return
+      end
+
+      vim.bo[buf].modified = false
+      pcall(vim.api.nvim_win_close, win, true)
+      annotate(state)
+      M.render_sidebar(state)
+    end,
+  })
+
+  vim.cmd("startinsert")
+end
+
+--- Start a comment on the line under the cursor.
+---@param state table
+function add_comment(state)
+  local anchor = anchor_here(state)
+  if not anchor then
+    vim.notify("gauntlet: comments go on a line of a file, not here", vim.log.levels.WARN)
+    return
+  end
+
+  -- GitHub will not take a comment on a line that is not part of the diff, so
+  -- say so now rather than at submission, when it would be a puzzle.
+  if not changes.commentable(state.diff.hunks, anchor.side, anchor.line) then
+    vim.notify(
+      ("gauntlet: line %d is not part of the diff, so GitHub would not take a comment there"):format(anchor.line),
+      vim.log.levels.WARN
+    )
+    return
+  end
+
+  compose(state, anchor)
+end
+
+--- Drop the comment on the line under the cursor.
+---@param state table
+function delete_comment(state)
+  local anchor = anchor_here(state)
+  if not anchor then
+    return
+  end
+
+  local found = comments.at(state.comments, anchor.path, anchor.side, anchor.line)
+  if #found == 0 then
+    vim.notify("gauntlet: no comment on this line", vim.log.levels.INFO)
+    return
+  end
+
+  for _, thread in ipairs(found) do
+    comments.remove(state.comments, thread)
+  end
+  comments.save(state.review, state.comments)
+  annotate(state)
+  M.render_sidebar(state)
+  vim.notify(("gauntlet: removed %d comment%s"):format(#found, #found == 1 and "" or "s"), vim.log.levels.INFO)
 end
 
 --- Open whatever the sidebar's cursor is on.
@@ -201,16 +564,18 @@ function M.render_sidebar(state)
   add("")
   add(("  Files (%d)"):format(#state.files), nil, "Comment")
 
+  local threads = comments.counts(state.comments or { threads = {} })
   for _, file in ipairs(state.files) do
     local counts = ("+%d −%d"):format(file.additions, file.deletions)
-    local room = SIDEBAR_WIDTH - 6 - #counts
+    local mark = threads[file.path] and ("●%d "):format(threads[file.path]) or ""
+    local room = SIDEBAR_WIDTH - 6 - #counts - vim.fn.strdisplaywidth(mark)
     local path = file.path
     if vim.fn.strdisplaywidth(path) > room then
       -- Keep the end of a long path: the filename matters more than the tree.
       path = "…" .. path:sub(-room + 1)
     end
     add(
-      ("  %s %-" .. room .. "s %s"):format(file.status, path, counts),
+      ("  %s %-" .. room .. "s %s%s"):format(file.status, path, mark, counts),
       { kind = "file", file = file }
     )
   end
@@ -260,6 +625,7 @@ end
 --- be picked up again, offline; :GauntletDiscard is what removes it.
 ---@param state table
 function M.close(state)
+  discard_panes(state)
   reviews[state.tab] = nil
   if #vim.api.nvim_list_tabpages() > 1 then
     pcall(vim.cmd, "tabclose")
@@ -284,6 +650,8 @@ function M.review(ctx)
     tab = vim.api.nvim_get_current_tabpage(),
     sidebar_win = vim.api.nvim_get_current_win(),
     current = 4,
+    -- Whatever was written the last time this review was open.
+    comments = comments.load(ctx.review),
   })
 
   state.sidebar_buf = scratch({}, nil, nil)
@@ -307,6 +675,7 @@ function M.review(ctx)
   vim.wo[win].spell = false
   vim.wo[win].signcolumn = "no"
 
+  M.highlights()
   M.render_sidebar(state)
   M.apply_keymaps(state.sidebar_buf, state)
   vim.keymap.set("n", "<CR>", function()
@@ -321,6 +690,103 @@ function M.review(ctx)
   vim.api.nvim_set_current_win(state.sidebar_win)
 
   return state
+end
+
+--- Send the drafts to GitHub as one review.
+---
+--- Nothing has left this machine until now: the verdict and the covering note
+--- are asked for here, and the line comments go with them in a single request.
+---@param state table
+function M.submit(state)
+  local github = require("gauntlet.github")
+  local drafts = comments.drafts(state.comments)
+
+  local verdicts = {
+    { label = "Comment — leave the comments without a verdict", event = "COMMENT" },
+    { label = "Approve", event = "APPROVE" },
+    { label = "Request changes", event = "REQUEST_CHANGES" },
+  }
+
+  vim.ui.select(verdicts, {
+    prompt = ("Submit %d comment%s on #%d as:"):format(
+      #drafts, #drafts == 1 and "" or "s", state.pr.number),
+    format_item = function(item)
+      return item.label
+    end,
+  }, function(choice)
+    if choice then
+      M.compose_review(state, choice.event, drafts)
+    end
+  end)
+end
+
+--- Write the covering note, then send.  `:w` submits; `:q` calls it off.
+---@param state table
+---@param event string
+---@param drafts table[]
+function M.compose_review(state, event, drafts)
+  local github = require("gauntlet.github")
+
+  vim.cmd("botright split")
+  local win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_height(win, 10)
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(win, buf)
+  vim.bo[buf].buftype = "acwrite"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].filetype = "markdown"
+  vim.wo[win].wrap = true
+  vim.wo[win].linebreak = true
+  vim.wo[win].number = false
+  claim_name(buf, ("gauntlet://pr-%d/review"):format(state.pr.number))
+
+  vim.api.nvim_create_autocmd("BufWriteCmd", {
+    buffer = buf,
+    desc = "Gauntlet: submit this review",
+    callback = function()
+      local body = vim.trim(table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n"))
+      if body == "" and #drafts == 0 then
+        vim.notify("gauntlet: nothing to submit", vim.log.levels.WARN)
+        return
+      end
+
+      local review, err = github.submit_review(state.repo, state.pr.number, {
+        commit_id = state.review.head,
+        body = body,
+        event = event,
+        comments = github.review_comments(drafts),
+      })
+      if not review then
+        -- The drafts are untouched, so this can simply be tried again.
+        vim.notify("gauntlet: could not submit: " .. err, vim.log.levels.ERROR)
+        return
+      end
+
+      -- Sent: mark them so, rather than deleting them, so the review still
+      -- shows what was said.
+      for _, thread in ipairs(drafts) do
+        for _, comment in ipairs(thread.comments or {}) do
+          comment.state = "published"
+        end
+      end
+      comments.save(state.review, state.comments)
+
+      vim.bo[buf].modified = false
+      pcall(vim.api.nvim_win_close, win, true)
+      annotate(state)
+      M.render_sidebar(state)
+      vim.notify(
+        ("gauntlet: submitted %d comment%s on #%d"):format(
+          #drafts, #drafts == 1 and "" or "s", state.pr.number),
+        vim.log.levels.INFO
+      )
+    end,
+  })
+
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "" })
+  vim.cmd("startinsert")
 end
 
 --- The review on the current tab page, if there is one.

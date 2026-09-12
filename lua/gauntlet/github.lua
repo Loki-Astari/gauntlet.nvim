@@ -102,4 +102,59 @@ function M.get_open(repo, number)
   return pr
 end
 
+--- Post a review: a verdict, a covering note, and the line comments together.
+---
+--- One request, because that is how GitHub models a review -- and it is what
+--- lets the comments be written offline and sent in a single go.
+---@param repo table { owner, repo }
+---@param number integer
+---@param payload table { commit_id, body, event, comments }
+---@return table|nil review, string|nil err
+function M.submit_review(repo, number, payload)
+  local config = require("gauntlet").config
+  if vim.fn.executable(config.gh) == 0 then
+    return nil, ("%s not found on PATH; install the GitHub CLI"):format(config.gh)
+  end
+
+  local out = vim.fn.system({
+    config.gh,
+    "api",
+    ("repos/%s/%s/pulls/%d/reviews"):format(repo.owner, repo.repo, number),
+    "--method",
+    "POST",
+    "--input",
+    "-",
+  }, vim.json.encode(payload))
+
+  if vim.v.shell_error ~= 0 then
+    return nil, vim.trim(out) ~= "" and vim.trim(out) or "gh exited with an error"
+  end
+
+  local ok, decoded = pcall(vim.json.decode, out)
+  if not ok then
+    return nil, "could not parse the response from gh"
+  end
+  return decoded
+end
+
+--- The comments of a review, in the shape GitHub's reviews endpoint wants.
+---@param threads table[]
+---@return table[]
+function M.review_comments(threads)
+  local out = {}
+  for _, thread in ipairs(threads) do
+    local body = {}
+    for _, comment in ipairs(thread.comments or {}) do
+      table.insert(body, comment.body)
+    end
+    table.insert(out, {
+      path = thread.path,
+      line = thread.line,
+      side = thread.side,
+      body = table.concat(body, "\n\n"),
+    })
+  end
+  return out
+end
+
 return M

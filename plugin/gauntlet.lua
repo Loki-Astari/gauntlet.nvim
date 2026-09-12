@@ -15,6 +15,17 @@ end, {
   desc = "Review a GitHub pull request (by number or URL; no argument lists open PRs)",
 })
 
+vim.api.nvim_create_user_command("GauntletSubmit", function()
+  local state = require("gauntlet.ui").current()
+  if not state then
+    vim.notify("gauntlet: no review here to submit", vim.log.levels.ERROR)
+    return
+  end
+  require("gauntlet.ui").submit(state)
+end, {
+  desc = "Send this review's comments to GitHub as one review",
+})
+
 vim.api.nvim_create_user_command("GauntletDiscard", function(opts)
   require("gauntlet").discard(opts.args)
 end, {

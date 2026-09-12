@@ -3,7 +3,7 @@ describe("gauntlet.ui", function()
   local changes = require("gauntlet.changes")
   local helpers = require("tests.helpers")
 
-  local fixture, state
+  local fixture, state, review_dir
 
   local pr = {
     number = 142,
@@ -26,7 +26,7 @@ describe("gauntlet.ui", function()
       repo = { owner = "o", repo = "r" },
       pr = pr,
       review = {
-        dir = fixture.root,
+        dir = review_dir,
         worktree = fixture.root,
         base = fixture.base,
         head = fixture.head,
@@ -57,11 +57,12 @@ describe("gauntlet.ui", function()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
   end
 
-  --- The windows on the right, left to right.
+  --- The diff windows on the right, left to right.  The comment composer is
+  --- not one of them, so it is excluded by its buffer type.
   local function panes()
     local out = {}
     for _, win in ipairs(vim.api.nvim_tabpage_list_wins(state.tab)) do
-      if win ~= state.sidebar_win then
+      if win ~= state.sidebar_win and vim.bo[vim.api.nvim_win_get_buf(win)].buftype ~= "acwrite" then
         table.insert(out, win)
       end
     end
@@ -70,6 +71,7 @@ describe("gauntlet.ui", function()
 
   before_each(function()
     fixture = helpers.repo()
+    review_dir = vim.fn.tempname()
     while #vim.api.nvim_list_tabpages() > 1 do
       vim.cmd("tabclose")
     end
@@ -82,6 +84,7 @@ describe("gauntlet.ui", function()
       vim.cmd("tabclose")
     end
     vim.cmd("enew!")
+    vim.fn.delete(review_dir, "rf")
     fixture.cleanup()
   end)
 
@@ -98,7 +101,7 @@ describe("gauntlet.ui", function()
 
     it("lists every changed file with its status and counts", function()
       local text = table.concat(sidebar_lines(), "\n")
-      assert.is_truthy(text:find("Files (3)", 1, true))
+      assert.is_truthy(text:find("Files (4)", 1, true))
       assert.is_truthy(text:find("M change.txt", 1, true))
       assert.is_truthy(text:find("A new.txt", 1, true))
       assert.is_truthy(text:find("D gone.txt", 1, true))
@@ -182,6 +185,215 @@ describe("gauntlet.ui", function()
     it("returns the cursor to the file list", function()
       select_entry("change.txt")
       assert.equals(state.sidebar_win, vim.api.nvim_get_current_win())
+    end)
+  end)
+
+  describe("comments", function()
+    local comments = require("gauntlet.comments")
+
+    --- Put the cursor on a line of the right-hand pane and press a key.
+    local function press(key, line, pane)
+      pane = pane or 2
+      vim.api.nvim_set_current_win(panes()[pane])
+      vim.api.nvim_win_set_cursor(panes()[pane], { line, 0 })
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(key, true, false, true), "x", false)
+    end
+
+    --- The composer is whichever window is not the sidebar or a diff pane.
+    local function composer()
+      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(state.tab)) do
+        if vim.bo[vim.api.nvim_win_get_buf(win)].buftype == "acwrite" then
+          return win
+        end
+      end
+    end
+
+    local function write_comment(text, line)
+      select_entry("change.txt")
+      press("c", line or 2)
+      local win = assert(composer(), "no composer opened")
+      vim.api.nvim_buf_set_lines(vim.api.nvim_win_get_buf(win), 0, -1, false,
+        vim.split(text, "\n", { plain = true }))
+      vim.api.nvim_set_current_win(win)
+      vim.cmd("write")
+    end
+
+    it("opens a place to write, under the diff", function()
+      select_entry("change.txt")
+      press("c", 2)
+      assert.is_true(composer() ~= nil)
+      assert.equals("markdown", vim.bo[vim.api.nvim_win_get_buf(composer())].filetype)
+    end)
+
+    it("spans both diff panes, not just one", function()
+      select_entry("change.txt")
+      press("c", 2)
+      local win = assert(composer(), "no composer opened")
+
+      local left, right = panes()[1], panes()[2]
+      local left_col = vim.api.nvim_win_get_position(left)[2]
+      local widths = vim.api.nvim_win_get_width(left) + vim.api.nvim_win_get_width(right)
+
+      -- Flush with the left pane, and as wide as the two together (plus the
+      -- separator between them).
+      assert.equals(left_col, vim.api.nvim_win_get_position(win)[2])
+      assert.is_true(vim.api.nvim_win_get_width(win) >= widths)
+    end)
+
+    it("leaves the sidebar alone while composing", function()
+      local width = vim.api.nvim_win_get_width(state.sidebar_win)
+      select_entry("change.txt")
+      press("c", 2)
+      assert.equals(width, vim.api.nvim_win_get_width(state.sidebar_win))
+      assert.is_true(vim.api.nvim_win_get_position(composer())[2] > 0)
+    end)
+
+    it("keeps both sides of the diff in view while composing", function()
+      select_entry("change.txt")
+      press("c", 2)
+      assert.equals(2, #panes())
+      for _, win in ipairs(panes()) do
+        assert.is_true(vim.wo[win].diff)
+      end
+    end)
+
+    it("draws the comment as a bordered note", function()
+      write_comment("needs a test")
+      local ns = vim.api.nvim_create_namespace("GauntletComments")
+      local marks = vim.api.nvim_buf_get_extmarks(
+        vim.api.nvim_win_get_buf(panes()[2]), ns, 0, -1, { details = true })
+      local drawn = vim.inspect(marks[1][4].virt_lines)
+
+      -- A box reads as not-code whatever the colourscheme does, which dim
+      -- virtual text among source lines did not.
+      assert.is_truthy(drawn:find("╭", 1, true))
+      assert.is_truthy(drawn:find("╰", 1, true))
+      assert.is_truthy(drawn:find("GauntletCommentBorder", 1, true))
+      assert.is_truthy(drawn:find("GauntletComment", 1, true))
+    end)
+
+    it("wraps a long comment instead of hiding the end of it", function()
+      local long = "this comment is deliberately far too long to fit inside the "
+        .. "width of a single diff pane and so it has to be broken across "
+        .. "several lines rather than cut short"
+      write_comment(long)
+
+      local ns = vim.api.nvim_create_namespace("GauntletComments")
+      local marks = vim.api.nvim_buf_get_extmarks(
+        vim.api.nvim_win_get_buf(panes()[2]), ns, 0, -1, { details = true })
+
+      local text = ""
+      for _, line in ipairs(marks[1][4].virt_lines) do
+        for _, chunk in ipairs(line) do
+          text = text .. chunk[1]
+        end
+      end
+
+      assert.is_nil(text:find("…", 1, true), "the comment was truncated")
+      -- Every word survives, in order, across however many lines it took.
+      for word in long:gmatch("%S+") do
+        assert.is_truthy(text:find(word, 1, true), "lost the word: " .. word)
+      end
+      assert.is_true(#marks[1][4].virt_lines > 4)
+    end)
+
+    it("defines its highlights so a colourscheme can override them", function()
+      ui.highlights()
+      for _, group in ipairs({
+        "GauntletComment", "GauntletCommentBorder", "GauntletCommentSign",
+      }) do
+        local hl = vim.api.nvim_get_hl(0, { name = group })
+        assert.is_truthy(next(hl), group .. " is not defined")
+      end
+    end)
+
+    it("keeps what was written, and closes", function()
+      write_comment("needs a test for the empty case")
+
+      assert.is_true(composer() == nil)
+      local stored = comments.load(state.review)
+      assert.equals(1, #stored.threads)
+      assert.equals("change.txt", stored.threads[1].path)
+      assert.equals("RIGHT", stored.threads[1].side)
+      assert.equals(2, stored.threads[1].line)
+      assert.equals("needs a test for the empty case", stored.threads[1].comments[1].body)
+      assert.equals("draft", stored.threads[1].comments[1].state)
+    end)
+
+    it("keeps nothing when nothing was written", function()
+      select_entry("change.txt")
+      press("c", 2)
+      vim.api.nvim_set_current_win(composer())
+      vim.cmd("write")
+      assert.same({}, comments.load(state.review).threads)
+    end)
+
+    it("refuses a line GitHub would not accept", function()
+      -- big.txt changed only at line 20, so line 1 is not in the diff at all.
+      -- Saying so now beats a puzzling rejection at submission time.
+      select_entry("big.txt")
+      press("c", 1)
+      assert.is_true(composer() == nil)
+      assert.same({}, comments.load(state.review).threads)
+    end)
+
+    it("allows a line that is in the diff", function()
+      select_entry("big.txt")
+      press("c", 20)
+      assert.is_true(composer() ~= nil)
+    end)
+
+    it("marks the line it is on, and shows the text under it", function()
+      write_comment("needs a test")
+      local ns = vim.api.nvim_create_namespace("GauntletComments")
+      local marks = vim.api.nvim_buf_get_extmarks(
+        vim.api.nvim_win_get_buf(panes()[2]), ns, 0, -1, { details = true })
+
+      assert.equals(1, #marks)
+      assert.equals(1, marks[1][2]) -- line 2, zero-based
+      assert.equals("●", marks[1][4].sign_text:gsub("%s", ""))
+      assert.is_truthy(vim.inspect(marks[1][4].virt_lines):find("needs a test", 1, true))
+    end)
+
+    it("counts them beside the file in the list", function()
+      write_comment("needs a test")
+      local text = table.concat(sidebar_lines(), "\n")
+      assert.is_truthy(text:find("●1", 1, true))
+    end)
+
+    it("deletes the comment on the line", function()
+      write_comment("needs a test")
+      press("dc", 2)
+
+      assert.same({}, comments.load(state.review).threads)
+      local ns = vim.api.nvim_create_namespace("GauntletComments")
+      assert.same({}, vim.api.nvim_buf_get_extmarks(
+        vim.api.nvim_win_get_buf(panes()[2]), ns, 0, -1, {}))
+    end)
+
+    it("are still there when the review is opened again", function()
+      write_comment("needs a test")
+
+      while #vim.api.nvim_list_tabpages() > 1 do
+        vim.cmd("tabclose")
+      end
+      vim.cmd("enew!")
+      state = open()
+
+      assert.equals(1, #state.comments.threads)
+      assert.is_truthy(table.concat(sidebar_lines(), "\n"):find("●1", 1, true))
+    end)
+
+    it("sends them as one review, in the shape GitHub wants", function()
+      write_comment("needs a test")
+      local payload = require("gauntlet.github").review_comments(
+        comments.drafts(state.comments))
+
+      assert.equals(1, #payload)
+      assert.equals("change.txt", payload[1].path)
+      assert.equals(2, payload[1].line)
+      assert.equals("RIGHT", payload[1].side)
+      assert.equals("needs a test", payload[1].body)
     end)
   end)
 end)

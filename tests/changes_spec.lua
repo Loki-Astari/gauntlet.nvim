@@ -27,7 +27,7 @@ describe("gauntlet.changes", function()
       local paths = vim.tbl_map(function(f)
         return f.path
       end, files)
-      assert.same({ "change.txt", "gone.txt", "new.txt" }, paths)
+      assert.same({ "big.txt", "change.txt", "gone.txt", "new.txt" }, paths)
     end)
 
     it("leaves untouched files out", function()
@@ -56,6 +56,40 @@ describe("gauntlet.changes", function()
       local files, err = changes.list(repo.root, "nosuchcommit", repo.head)
       assert.is_nil(files)
       assert.is_string(err)
+    end)
+  end)
+
+  describe("hunks", function()
+    it("says which lines GitHub would take a comment on", function()
+      local hunks = changes.hunks(repo.root, repo.base, repo.head, "change.txt")
+      -- change.txt went from "alpha/beta" to "alpha/BETA/gamma": the whole
+      -- of both versions is on show, context included.
+      assert.is_true(changes.commentable(hunks, "LEFT", 1))
+      assert.is_true(changes.commentable(hunks, "LEFT", 2))
+      assert.is_true(changes.commentable(hunks, "RIGHT", 3))
+    end)
+
+    it("refuses a line that is not in the diff at all", function()
+      -- big.txt changed only at line 20, so with three lines of context the
+      -- diff shows 17..23 and nothing else.
+      local hunks = changes.hunks(repo.root, repo.base, repo.head, "big.txt")
+      assert.is_true(changes.commentable(hunks, "RIGHT", 20))
+      assert.is_true(changes.commentable(hunks, "RIGHT", 17))
+      assert.is_false(changes.commentable(hunks, "RIGHT", 1))
+      assert.is_false(changes.commentable(hunks, "RIGHT", 40))
+      assert.is_false(changes.commentable(hunks, "LEFT", 5))
+    end)
+
+    it("has no left-hand side for an added file", function()
+      local hunks = changes.hunks(repo.root, repo.base, repo.head, "new.txt")
+      assert.same({}, hunks.LEFT)
+      assert.is_true(changes.commentable(hunks, "RIGHT", 1))
+    end)
+
+    it("has no right-hand side for a deleted file", function()
+      local hunks = changes.hunks(repo.root, repo.base, repo.head, "gone.txt")
+      assert.same({}, hunks.RIGHT)
+      assert.is_true(changes.commentable(hunks, "LEFT", 1))
     end)
   end)
 
