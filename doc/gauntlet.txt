@@ -9,9 +9,10 @@ CONTENTS                                                    *gauntlet-contents*
   4. Commands .............. |gauntlet-commands|
   5. The terminal command .. |gauntlet-vig|
   6. The review view ....... |gauntlet-review|
-  7. The review worktree ... |gauntlet-worktree|
-  8. Errors ................ |gauntlet-errors|
-  9. Configuration ......... |gauntlet-configuration|
+  7. Comments .............. |gauntlet-comments|
+  8. The review worktree ... |gauntlet-worktree|
+  9. Errors ................ |gauntlet-errors|
+ 10. Configuration ......... |gauntlet-configuration|
 
 ==============================================================================
 1. INTRODUCTION                                         *gauntlet-introduction*
@@ -143,7 +144,43 @@ worktree, which is what lets a language server, |gd| and |K| work on it, but
 it is opened non-modifiable: reviewing must not be able to change a checkout.
 
 ==============================================================================
-7. THE REVIEW WORKTREE                                      *gauntlet-worktree*
+7. COMMENTS                                                 *gauntlet-comments*
+
+    c                   Comment on the line under the cursor.
+    dc                  Delete the comment on the line under the cursor.
+
+`c` opens a buffer under the diff to write in.  It is an ordinary buffer, so
+every editing habit works: `:w` keeps the comment, `:q` throws it away.  The
+code being commented on stays in view above.
+
+A line carrying a comment is marked in the sign column, with the text shown
+underneath it.  The file list counts them, so `●2` beside a file means two.
+
+Comments anchor to a line *and a side*: the left-hand pane is the base, the
+right-hand pane the pull request.  GitHub will only accept a comment on a line
+that is part of the diff, so `c` refuses a line that is not, rather than
+letting the rejection turn up later as a puzzle.
+
+                                                            *:GauntletSubmit*
+:GauntletSubmit         Send this review to GitHub.
+
+Nothing leaves the machine until then.  Comments are written offline, kept in
+the review directory, and go to GitHub together as a single review, which is
+how GitHub models one: a verdict -- comment, approve, or request changes -- a
+covering note, and the line comments.  `:w` in the covering note sends it;
+`:q` calls it off.
+
+If sending fails the comments are left exactly as they were, so it can simply
+be tried again.  Comments that have been sent are kept, marked as sent, so
+the review still shows what was said.
+
+Comments are stored as *threads*, each holding a list of comments, even though
+one you write has a single comment in it.  A thread fetched from GitHub is the
+same shape with more comments and an author who is not you, so pulling threads
+in later will add to this rather than change it.
+
+==============================================================================
+8. THE REVIEW WORKTREE                                      *gauntlet-worktree*
 
 A review is backed by a git worktree, so that it can be *started* online and
 *finished* offline.  Opening a review does all the network work at once:
@@ -163,6 +200,7 @@ A review is kept at: >
 
     ~/.local/state/nvim/gauntlet/<repo>/pr-<n>/
         worktree/       the checkout, detached at the pull request's head
+        comments.json   comments you have written but not yet sent
         meta.json       base and head commits, and when they were fetched
 <
 The worktree is a *subdirectory* of the review rather than the review itself,
@@ -178,7 +216,7 @@ needs no network at all.
 :GauntletDiscard {id}   The same, for a review you are not looking at.
 
 ==============================================================================
-8. ERRORS                                                     *gauntlet-errors*
+9. ERRORS                                                     *gauntlet-errors*
 
 A review is labelled "PR Review {id}".  Neovim's own tabline and bufferline
 style plugins both label from the tail of a buffer's name, so that is the tail
@@ -214,7 +252,7 @@ one, and `origin` otherwise, so that working from a fork reviews the pull
 requests of the project you forked.
 
 ==============================================================================
-9. CONFIGURATION                                       *gauntlet-configuration*
+10. CONFIGURATION                                      *gauntlet-configuration*
 
 setup() takes an options table, merged over the defaults: >lua
 

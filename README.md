@@ -2,9 +2,10 @@
 
 A Neovim user interface for reviewing GitHub pull requests locally.
 
-> **Status: early.** A review shows the PR's description and a two-pane diff
-> of every changed file, backed by a git worktree so it can be finished
-> offline. Review comments are still to come.
+> **Status: early.** A review shows the PR's description, a two-pane diff of
+> every changed file, and comments you can write offline and submit as one
+> GitHub review. Backed by a git worktree, so the whole thing works
+> disconnected.
 
 ## Requirements
 
@@ -50,6 +51,8 @@ left, and on the right either the PR's description or a two-pane diff.
 | Key | |
 | --- | --- |
 | `<CR>` | Open the entry under the cursor |
+| `c` | Comment on the line under the cursor |
+| `dc` | Delete the comment on that line |
 | `q` | Close the review |
 | `<C-w>f` | Jump back to the file list |
 
@@ -57,6 +60,20 @@ Diffs use Neovim's own diff mode, so `]c`, `[c` and folding behave as they do
 in `vimdiff`. Everything is read-only — the right-hand side is a real file in
 the review worktree, so a language server and `gd` work on it, but reviewing
 cannot change a checkout.
+
+### Comments
+
+`c` opens a buffer under the diff — an ordinary one, so `:w` keeps the comment
+and `:q` throws it away. Commented lines are marked in the sign column with
+the text underneath, and the file list counts them (`●2`).
+
+Comments anchor to a line *and* a side (left is the base, right is the PR).
+GitHub only accepts comments on lines that are part of the diff, so `c`
+refuses a line that isn't rather than letting it fail at submission.
+
+Nothing leaves your machine until `:GauntletSubmit`, which sends the lot as a
+single GitHub review: a verdict, a covering note, and the line comments. If it
+fails, your comments are untouched and you can try again.
 
 `:GauntletDiscard` removes a review from disk when you are done with it.
 

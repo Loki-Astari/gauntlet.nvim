@@ -107,6 +107,56 @@ function M.list(root, base, head)
   return files
 end
 
+--- Which lines of a file appear in the pull request's diff.
+---
+--- GitHub will only take a review comment on a line that is part of the diff,
+--- so this is what says where a comment may go.  Hunk headers are enough:
+--- "@@ -a,b +c,d @@" means base lines a..a+b-1 and head lines c..c+d-1 are on
+--- show.  Git's default three lines of context are kept, because GitHub
+--- displays context lines too and accepts comments on them.
+---@param root string
+---@param base string
+---@param head string
+---@param path string
+---@return table hunks { LEFT = { {first, last}, ... }, RIGHT = { ... } }
+function M.hunks(root, base, head, path)
+  local ranges = { LEFT = {}, RIGHT = {} }
+  local lines = git.run(root, {
+    "diff", "--no-ext-diff", "-M", base, head, "--", path,
+  })
+
+  for _, line in ipairs(lines or {}) do
+    -- A count of 1 is left out: "@@ -5 +5,2 @@" means one line at 5.
+    local old_start, old_count, new_start, new_count =
+      line:match("^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@")
+    if old_start then
+      old_count = tonumber(old_count) or 1
+      new_count = tonumber(new_count) or 1
+      if old_count > 0 then
+        table.insert(ranges.LEFT, { tonumber(old_start), tonumber(old_start) + old_count - 1 })
+      end
+      if new_count > 0 then
+        table.insert(ranges.RIGHT, { tonumber(new_start), tonumber(new_start) + new_count - 1 })
+      end
+    end
+  end
+  return ranges
+end
+
+--- May a comment be left on this line?
+---@param hunks table  from M.hunks
+---@param side string  "LEFT" or "RIGHT"
+---@param line integer
+---@return boolean
+function M.commentable(hunks, side, line)
+  for _, range in ipairs((hunks or {})[side] or {}) do
+    if line >= range[1] and line <= range[2] then
+      return true
+    end
+  end
+  return false
+end
+
 --- The contents of a file as it was before the pull request.
 --- An added file has no before, which is an empty left-hand pane, not a
 --- failure -- so the two cases are told apart by `ok`, not by emptiness.

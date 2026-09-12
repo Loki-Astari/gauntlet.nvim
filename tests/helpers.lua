@@ -35,13 +35,23 @@ function M.repo()
   vim.fn.mkdir(root, "p")
   git(root, { "init", "-q", "-b", "main", "." })
 
+  local long = {}
+  for i = 1, 40 do
+    long[i] = "line " .. i
+  end
+
   write(root, "keep.txt", "one\ntwo")
   write(root, "change.txt", "alpha\nbeta")
   write(root, "gone.txt", "bye")
+  -- Long enough that most of its lines fall outside the diff's hunks, which
+  -- is where GitHub refuses a comment.
+  write(root, "big.txt", table.concat(long, "\n"))
   git(root, { "add", "-A" })
   git(root, { "commit", "-qm", "base" })
   local base = git(root, { "rev-parse", "HEAD" })[1]
 
+  long[20] = "line 20 CHANGED"
+  write(root, "big.txt", table.concat(long, "\n"))
   write(root, "change.txt", "alpha\nBETA\ngamma")
   vim.fn.delete(vim.fs.joinpath(root, "gone.txt"))
   write(root, "new.txt", "fresh")
