@@ -91,9 +91,15 @@ describe("gauntlet", function()
       assert.equals("# #7  Handed over", lines[1])
       assert.equals("PR Review 7", vim.t.gauntlet_title)
 
-      -- The handover file is ours, and is consumed exactly once.
+      -- The handover file is ours, and is consumed exactly once...
       assert.equals(0, vim.fn.filereadable(path))
-      assert.is_nil(vim.env.GAUNTLET_PRELOAD)
+      local tabs = #vim.api.nvim_list_tabpages()
+      gauntlet._open_preloaded()
+      assert.equals(tabs, #vim.api.nvim_list_tabpages())
+
+      -- ...but the variable stays set, so a config can tell for the whole
+      -- session that this Neovim is only here to show a review.
+      assert.equals(path, vim.env.GAUNTLET_PRELOAD)
     end)
 
     it("survives a handover file it cannot parse", function()

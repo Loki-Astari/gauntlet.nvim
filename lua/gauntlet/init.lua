@@ -105,15 +105,22 @@ function M.review(input)
   end)
 end
 
+-- Guards the handover below against running twice.  $GAUNTLET_PRELOAD is
+-- deliberately *not* cleared instead: it is how a config tells that this
+-- Neovim exists only to show a review, and it has to stay true until the
+-- process exits -- a session-saving VimLeavePre autocmd is the case that
+-- matters, since a review is not a workspace worth saving over one.
+local preloaded = false
+
 --- Show the pull request `vig` left in $GAUNTLET_PRELOAD.
 --- The file is ours, and is consumed exactly once.
 --- Exposed for the tests; M.open_preload() is the entry point.
 function M._open_preloaded()
   local path = vim.env.GAUNTLET_PRELOAD
-  if not path or path == "" then
+  if preloaded or not path or path == "" then
     return
   end
-  vim.env.GAUNTLET_PRELOAD = nil
+  preloaded = true
 
   local ok, content = pcall(vim.fn.readfile, path)
   pcall(vim.fn.delete, path)

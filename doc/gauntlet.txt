@@ -87,11 +87,20 @@ The review is opened once startup has finished, not during it.  Neovim runs
 "-c" commands *before* |VimEnter|, so a config that restores a session there,
 or opens a dashboard or a file tree, would otherwise land on top of the review
 and replace it.  If your config does restore a session, `vig {id}` gives you
-that session with the review as an extra, focused tab.  To have `vig` skip the
-restore, guard the autocommand on the variable vig sets: >lua
+that session with the review as an extra, focused tab.
+
+                                                          *$GAUNTLET_PRELOAD*
+$GAUNTLET_PRELOAD is set for the whole life of a Neovim that vig started, so a
+config can tell that this one exists only to show a review: >lua
 
     if vim.env.GAUNTLET_PRELOAD then return end
 <
+Two places are worth guarding that way if you save and restore sessions per
+directory.  Skipping the *restore* keeps `vig {id}` to the review alone.
+Skipping the *save* matters more: a review is a scratch buffer, not a
+workspace, so a session written when vig exits would replace the real session
+for that directory with nothing worth restoring.
+
 $GAUNTLET_NVIM overrides the Neovim executable vig uses.
 
 ==============================================================================
