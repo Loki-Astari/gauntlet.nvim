@@ -78,11 +78,16 @@ vig {url}               already open.
 vig                     Print the open pull requests to standard output.
                         Neovim is not started.
 
-Everything is checked before an editor appears: with an argument, vig
-validates and fetches the pull request headlessly first.  If that fails the
-message goes to standard error and vig exits non-zero, with no Neovim left
-running.  On success the fetched pull request is handed to Neovim directly, so
-GitHub is asked only once.
+Everything happens before an editor appears.  With an argument, vig runs the
+whole of |gauntlet-worktree| headlessly first: it checks the argument, asks
+GitHub about the pull request, fetches it, checks it out, and works out what
+it changes.  Only then does Neovim start, and it is handed the finished review
+rather than repeating any of it.
+
+So every way this can fail -- a bad argument, a closed pull request, no
+network, a repository too shallow to find the merge base, nowhere to put the
+worktree -- is a line on standard error and a non-zero exit, with no Neovim
+left running and no half-open review.
 
 The review is opened once startup has finished, not during it.  Neovim runs
 "-c" commands *before* |VimEnter|, so a config that restores a session there,

@@ -70,7 +70,13 @@ describe("gauntlet", function()
         return
       end
 
-      preload(vim.json.encode({ repo = { owner = "o", repo = "r" }, pr = { number = 7 } }))
+      preload(vim.json.encode({
+        repo = { owner = "o", repo = "r" },
+        pr = { number = 7 },
+        review = { worktree = "/tmp/wt", base = "aaa", head = "bbb" },
+        files = {},
+        root = "/tmp/repo",
+      }))
       local before = #vim.api.nvim_list_tabpages()
       gauntlet.open_preload()
 
@@ -79,26 +85,38 @@ describe("gauntlet", function()
       assert.is_true(#vim.api.nvim_get_autocmds({ group = "GauntletPreload", event = "VimEnter" }) > 0)
     end)
 
-    it("opens the pull request vig handed over", function()
+    it("opens the review vig prepared, without preparing it again", function()
+      -- vig fetches and checks out the pull request before Neovim starts, so
+      -- what arrives is a whole review, not something still to be worked out.
       local path = preload(vim.json.encode({
         repo = { owner = "o", repo = "r" },
         pr = { number = 7, title = "Handed over", author = { login = "loki" }, body = "Body." },
+        review = { worktree = "/tmp/wt", base = "aaa", head = "bbb", number = 7 },
+        files = { { path = "a.lua", status = "M", additions = 1, deletions = 0 } },
+        root = "/tmp/repo",
       }))
 
-      -- Stand in for the review machinery: this is about the handover, and
-      -- opening a real review would want a repository and a network.
-      local started
-      local real = gauntlet.start
-      gauntlet.start = function(repo, pr)
-        started = { repo = repo, pr = pr }
+      local ui = require("gauntlet.ui")
+      local shown, real_review = nil, ui.review
+      ui.review = function(ctx)
+        shown = ctx
         return {}
       end
-      gauntlet._open_preloaded()
-      gauntlet.start = real
+      local prepared, real_prepare = false, gauntlet.prepare
+      gauntlet.prepare = function()
+        prepared = true
+      end
 
-      assert.equals(7, started.pr.number)
-      assert.equals("Handed over", started.pr.title)
-      assert.equals("o", started.repo.owner)
+      gauntlet._open_preloaded()
+
+      ui.review = real_review
+      gauntlet.prepare = real_prepare
+
+      assert.is_false(prepared)
+      assert.equals(7, shown.pr.number)
+      assert.equals("o", shown.repo.owner)
+      assert.equals("bbb", shown.review.head)
+      assert.equals("a.lua", shown.files[1].path)
 
       -- The handover file is ours, and is consumed exactly once...
       assert.equals(0, vim.fn.filereadable(path))
@@ -113,12 +131,9 @@ describe("gauntlet", function()
 
     it("survives a handover file it cannot parse", function()
       preload("not json at all")
-      local real = gauntlet.start
-      gauntlet.start = function() end
       assert.has_no.errors(function()
         gauntlet._open_preloaded()
       end)
-      gauntlet.start = real
     end)
   end)
 

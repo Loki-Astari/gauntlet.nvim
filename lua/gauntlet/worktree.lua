@@ -60,6 +60,20 @@ local function registered(root, path)
   return false
 end
 
+--- Create a directory, reporting failure rather than raising it.
+--- vim.fn.mkdir() throws, and `vig` has to turn a failure into one line on
+--- the terminal, not a Lua traceback.
+---@param path string
+---@return boolean ok, string|nil err
+local function ensure_dir(path)
+  local ok, err = pcall(vim.fn.mkdir, path, "p")
+  if ok then
+    return true
+  end
+  -- Vim errors arrive as "Vim:E739: Cannot create directory ...".
+  return false, tostring(err):gsub("^Vim:", "")
+end
+
 ---@param path string
 ---@return table|nil
 local function read_json(path)
@@ -75,8 +89,10 @@ end
 ---@param path string
 ---@param value table
 local function write_json(path, value)
-  vim.fn.mkdir(vim.fs.dirname(path), "p")
-  vim.fn.writefile(vim.split(vim.json.encode(value), "\n", { plain = true }), path)
+  if not ensure_dir(vim.fs.dirname(path)) then
+    return
+  end
+  pcall(vim.fn.writefile, vim.split(vim.json.encode(value), "\n", { plain = true }), path)
 end
 
 --- Bring a pull request onto disk, or reconnect to a review already there.
@@ -136,7 +152,11 @@ function M.open(repo, pr)
     return nil, "could not work out what this pull request branched from"
   end
 
-  vim.fn.mkdir(dir, "p")
+  local ok, derr = ensure_dir(dir)
+  if not ok then
+    return nil, derr
+  end
+
   local _, werr = git.run(root, { "worktree", "add", "--detach", worktree, ref })
   if werr then
     return nil, ("could not create the review worktree: %s"):format(werr)

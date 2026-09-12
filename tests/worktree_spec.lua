@@ -96,6 +96,20 @@ describe("gauntlet.worktree", function()
     assert.is_nil(table.concat(listed, "\n"):find("pr-1", 1, true))
   end)
 
+  it("reports a failure rather than raising it", function()
+    -- vig calls this before Neovim starts and has to turn any failure into
+    -- one line on the terminal, so nothing here may throw.
+    vim.fn.mkdir(vim.fs.joinpath(store, "r"), "p")
+    vim.fn.writefile({ "" }, worktree.dir(repo, 1)) -- a file where the review goes
+
+    local review, err
+    assert.has_no.errors(function()
+      review, err = worktree.open(repo, pr)
+    end)
+    assert.is_nil(review)
+    assert.is_string(err)
+  end)
+
   it("lists the reviews on disk", function()
     worktree.open(repo, pr)
     assert.same({ 1 }, worktree.list(repo))

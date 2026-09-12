@@ -74,18 +74,23 @@ function M.resolve(input)
   return repo, pr
 end
 
---- Bring a pull request onto disk and open the review interface for it.
+--- Bring a pull request onto disk: fetch it, check it out, and work out what
+--- it changes.
 ---
---- This is the step that needs the network, and the only one: afterwards the
---- file list and both sides of every diff are read from local git.
+--- This is the step that needs the network, and the only one -- afterwards the
+--- file list and both sides of every diff are read from local git.  It is kept
+--- apart from the interface so `vig` can do it before Neovim starts, and fail
+--- on the terminal rather than inside an editor that should not have opened.
+---
+--- Everything it returns survives vim.json, because that is how `vig` hands it
+--- over.
 ---@param repo table
 ---@param pr table
----@return table|nil state, string|nil err
-function M.start(repo, pr)
+---@return table|nil ctx { repo, pr, review, files, root }, string|nil err
+function M.prepare(repo, pr)
   local worktree = require("gauntlet.worktree")
   local changes = require("gauntlet.changes")
   local git = require("gauntlet.git")
-  local ui = require("gauntlet.ui")
 
   local root, err = git.root()
   if not root then
@@ -104,13 +109,25 @@ function M.start(repo, pr)
     return nil, err
   end
 
-  return ui.review({
+  return {
     repo = repo,
     pr = pr,
     review = review,
     files = files,
     root = root,
-  })
+  }
+end
+
+--- Prepare a pull request and open the review interface for it.
+---@param repo table
+---@param pr table
+---@return table|nil state, string|nil err
+function M.start(repo, pr)
+  local ctx, err = M.prepare(repo, pr)
+  if not ctx then
+    return nil, err
+  end
+  return require("gauntlet.ui").review(ctx)
 end
 
 --- The `:Gauntlet` command.  With an argument, review that PR; without one,
@@ -220,17 +237,16 @@ function M._open_preloaded()
     return
   end
 
-  local decoded
-  ok, decoded = pcall(vim.json.decode, table.concat(content, "\n"))
-  if not ok or not decoded or not decoded.pr then
+  local ctx
+  ok, ctx = pcall(vim.json.decode, table.concat(content, "\n"))
+  if not ok or not ctx or not ctx.pr or not ctx.review then
     vim.notify("gauntlet: could not read the preloaded pull request", vim.log.levels.ERROR)
     return
   end
 
-  local _, err = M.start(decoded.repo, decoded.pr)
-  if err then
-    vim.notify("gauntlet: " .. err, vim.log.levels.ERROR)
-  end
+  -- `vig` already fetched the pull request and worked out what it changes, so
+  -- there is nothing left to do but show it.
+  require("gauntlet.ui").review(ctx)
 end
 
 --- Open a pull request that `vig` already fetched and validated, so starting

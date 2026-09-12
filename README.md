@@ -87,8 +87,10 @@ vig                                            # print the open PRs and exit
 ```
 
 With no argument `vig` prints the list and never starts Neovim. With an
-argument it validates and fetches the pull request first, so a bad argument
-prints an error to stderr and exits non-zero without an editor appearing.
+argument it does all the work first — checks the argument, fetches the PR,
+checks it out, works out what changed — and only then starts Neovim, handing
+it the finished review. Every way that can fail is an error on stderr and a
+non-zero exit, with no editor left open.
 
 Install it by putting `bin/` on your `PATH`, or with an alias:
 
