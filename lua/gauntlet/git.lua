@@ -38,6 +38,27 @@ function M.parse_remote(url)
   return host, owner, repo
 end
 
+--- The root of the current work tree.
+--- Git commands are run against this rather than the working directory: a
+--- review's own worktree lives elsewhere, and `vig` may be started anywhere
+--- inside the repository.
+---@return string|nil root, string|nil err
+function M.root()
+  local out, err = run({ "git", "rev-parse", "--show-toplevel" })
+  if not out or not out[1] or out[1] == "" then
+    return nil, err or "could not find the repository root"
+  end
+  return out[1]
+end
+
+--- Run a git command inside `root`.
+---@param root string
+---@param args string[]
+---@return string[]|nil lines, string|nil err
+function M.run(root, args)
+  return run(vim.list_extend({ "git", "-C", root }, args))
+end
+
 --- True when the current working directory is inside a git work tree.
 function M.is_repo()
   local out = run({ "git", "rev-parse", "--is-inside-work-tree" })

@@ -85,11 +85,20 @@ describe("gauntlet", function()
         pr = { number = 7, title = "Handed over", author = { login = "loki" }, body = "Body." },
       }))
 
+      -- Stand in for the review machinery: this is about the handover, and
+      -- opening a real review would want a repository and a network.
+      local started
+      local real = gauntlet.start
+      gauntlet.start = function(repo, pr)
+        started = { repo = repo, pr = pr }
+        return {}
+      end
       gauntlet._open_preloaded()
+      gauntlet.start = real
 
-      local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-      assert.equals("# #7  Handed over", lines[1])
-      assert.equals("PR Review 7", vim.t.gauntlet_title)
+      assert.equals(7, started.pr.number)
+      assert.equals("Handed over", started.pr.title)
+      assert.equals("o", started.repo.owner)
 
       -- The handover file is ours, and is consumed exactly once...
       assert.equals(0, vim.fn.filereadable(path))
@@ -104,9 +113,12 @@ describe("gauntlet", function()
 
     it("survives a handover file it cannot parse", function()
       preload("not json at all")
+      local real = gauntlet.start
+      gauntlet.start = function() end
       assert.has_no.errors(function()
         gauntlet._open_preloaded()
       end)
+      gauntlet.start = real
     end)
   end)
 

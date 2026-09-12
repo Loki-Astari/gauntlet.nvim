@@ -9,8 +9,9 @@ CONTENTS                                                    *gauntlet-contents*
   4. Commands .............. |gauntlet-commands|
   5. The terminal command .. |gauntlet-vig|
   6. The review view ....... |gauntlet-review|
-  7. Errors ................ |gauntlet-errors|
-  8. Configuration ......... |gauntlet-configuration|
+  7. The review worktree ... |gauntlet-worktree|
+  8. Errors ................ |gauntlet-errors|
+  9. Configuration ......... |gauntlet-configuration|
 
 ==============================================================================
 1. INTRODUCTION                                         *gauntlet-introduction*
@@ -106,6 +107,74 @@ $GAUNTLET_NVIM overrides the Neovim executable vig uses.
 ==============================================================================
 6. THE REVIEW VIEW                                            *gauntlet-review*
 
+A review is one tab page: the changed files on the left, and on the right
+either the pull request's description or a two-pane diff.
+>
+    +- Files ---------+- lua/gauntlet/ui.lua ---------------+
+    | > Conversation  |  base             |  head            |
+    |                 |                   |                  |
+    | M .gitignore +3 |  local M = {}     |  local M = {}    |
+    | A CLAUDE.md +54 |                   | +function M.pick |
+    +-----------------+-------------------+------------------+
+<
+The file list is flat and sorted, each line carrying the status letter git
+gives it -- A, M, D, R -- and the lines added and removed.  `Conversation` is
+the first entry, so the description is one keystroke away from any file.
+
+    <CR>                Open the entry under the cursor.
+    q                   Close the review.
+    <C-w>f              Jump back to the file list.
+
+Selecting a file shows the merge-base version on the left and the pull
+request's version on the right, in Neovim's own diff mode, so |]c|, |[c| and
+|zo| all behave as they do in `vimdiff`.
+
+An added file has an empty left-hand side, a deleted file an empty right-hand
+side.
+
+                                                        *gauntlet-read-only*
+Everything is read-only.  The right-hand side is a real file in the review
+worktree, which is what lets a language server, |gd| and |K| work on it, but
+it is opened non-modifiable: reviewing must not be able to change a checkout.
+
+==============================================================================
+7. THE REVIEW WORKTREE                                      *gauntlet-worktree*
+
+A review is backed by a git worktree, so that it can be *started* online and
+*finished* offline.  Opening a review does all the network work at once:
+>
+    git fetch origin refs/pull/<n>/head     the pull request's commits
+    git merge-base <base> <head>            what it branched from
+    git worktree add --detach <dir> <ref>   its files, on disk
+    git diff <base> <head>                  every blob of both sides
+<
+That last step matters on a partial clone -- one made with `--filter` -- where
+blobs are otherwise fetched only when something asks for them, and a review
+would quietly need the network for every file opened.
+
+Afterwards the file list and both sides of every diff are read from local git.
+
+A review is kept at: >
+
+    ~/.local/state/nvim/gauntlet/<repo>/pr-<n>/
+        worktree/       the checkout, detached at the pull request's head
+        meta.json       base and head commits, and when they were fetched
+<
+The worktree is a *subdirectory* of the review rather than the review itself,
+so that nothing gauntlet writes ever appears in the worktree's `git status`,
+where it could be committed by accident.
+
+Reviews persist.  Opening one again reconnects to what is already on disk and
+needs no network at all.
+
+                                                             *:GauntletDiscard*
+:GauntletDiscard        Remove the current review from disk: its worktree, its
+                        `refs/gauntlet/pr/<n>` ref, and gauntlet's own files.
+:GauntletDiscard {id}   The same, for a review you are not looking at.
+
+==============================================================================
+8. ERRORS                                                     *gauntlet-errors*
+
 A review is labelled "PR Review {id}".  Neovim's own tabline and bufferline
 style plugins both label from the tail of a buffer's name, so that is the tail
 of the name; the repository is kept in front of it to stay unique, since two
@@ -123,8 +192,6 @@ The buffer is read-only, 'buftype' "nofile", and 'filetype' "markdown".
                         tab page; if the review was all that was open, as
                         after `vig {id}`, Neovim exits.
 
-==============================================================================
-7. ERRORS                                                     *gauntlet-errors*
 
 Both `:Gauntlet` and `vig` report:
 
@@ -142,13 +209,15 @@ one, and `origin` otherwise, so that working from a fork reviews the pull
 requests of the project you forked.
 
 ==============================================================================
-8. CONFIGURATION                                       *gauntlet-configuration*
+9. CONFIGURATION                                       *gauntlet-configuration*
 
 setup() takes an options table, merged over the defaults: >lua
 
     require("gauntlet").setup({
       gh = "gh",   -- path to the GitHub CLI
       limit = 100, -- most open pull requests to list at once
+      dir = nil,   -- where review worktrees are kept; nil means
+                   -- stdpath("state")/gauntlet
     })
 <
 Calling setup() is optional; the defaults apply without it.
