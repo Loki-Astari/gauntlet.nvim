@@ -21,8 +21,9 @@ describe("gauntlet.ui", function()
 
   --- The fixture's working tree is checked out at head, which is the shape of
   --- a review worktree, so it stands in for one.
-  local function open()
+  local function open(thread_store)
     return ui.review({
+      threads = thread_store,
       repo = { owner = "o", repo = "r" },
       pr = pr,
       review = {
@@ -188,35 +189,35 @@ describe("gauntlet.ui", function()
     end)
   end)
 
-  describe("comments", function()
-    local comments = require("gauntlet.comments")
+  --- Put the cursor on a line of a diff pane and press a key.
+  local function press(key, line, pane)
+    pane = pane or 2
+    vim.api.nvim_set_current_win(panes()[pane])
+    vim.api.nvim_win_set_cursor(panes()[pane], { line, 0 })
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(key, true, false, true), "x", false)
+  end
 
-    --- Put the cursor on a line of the right-hand pane and press a key.
-    local function press(key, line, pane)
-      pane = pane or 2
-      vim.api.nvim_set_current_win(panes()[pane])
-      vim.api.nvim_win_set_cursor(panes()[pane], { line, 0 })
-      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(key, true, false, true), "x", false)
-    end
-
-    --- The composer is whichever window is not the sidebar or a diff pane.
-    local function composer()
-      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(state.tab)) do
-        if vim.bo[vim.api.nvim_win_get_buf(win)].buftype == "acwrite" then
-          return win
-        end
+  --- The composer is whichever window is neither the sidebar nor a diff pane.
+  local function composer()
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(state.tab)) do
+      if vim.bo[vim.api.nvim_win_get_buf(win)].buftype == "acwrite" then
+        return win
       end
     end
+  end
 
-    local function write_comment(text, line)
-      select_entry("change.txt")
-      press("c", line or 2)
-      local win = assert(composer(), "no composer opened")
-      vim.api.nvim_buf_set_lines(vim.api.nvim_win_get_buf(win), 0, -1, false,
-        vim.split(text, "\n", { plain = true }))
-      vim.api.nvim_set_current_win(win)
-      vim.cmd("write")
-    end
+  local function write_comment(text, line)
+    select_entry("change.txt")
+    press("c", line or 2)
+    local win = assert(composer(), "no composer opened")
+    vim.api.nvim_buf_set_lines(vim.api.nvim_win_get_buf(win), 0, -1, false,
+      vim.split(text, "\n", { plain = true }))
+    vim.api.nvim_set_current_win(win)
+    vim.cmd("write")
+  end
+
+  describe("comments", function()
+    local comments = require("gauntlet.comments")
 
     it("opens a place to write, under the diff", function()
       select_entry("change.txt")
@@ -394,6 +395,154 @@ describe("gauntlet.ui", function()
       assert.equals(2, payload[1].line)
       assert.equals("RIGHT", payload[1].side)
       assert.equals("needs a test", payload[1].body)
+    end)
+  end)
+
+  describe("threads pulled from GitHub", function()
+    local comments = require("gauntlet.comments")
+
+    --- `without` names fields to clear: a table constructor cannot hold an
+    --- explicit nil, so `{ line = nil }` would silently keep the default.
+    local function github_thread(over, without)
+      local built = vim.tbl_extend("force", {
+        id = "PRRT_1",
+        origin = "github",
+        path = "change.txt",
+        side = "RIGHT",
+        line = 2,
+        resolved = false,
+        outdated = false,
+        subject = "line",
+        comments = { { author = "loki", body = "why not local?", state = "published" } },
+      }, over or {})
+      for _, field in ipairs(without or {}) do
+        built[field] = nil
+      end
+      return built
+    end
+
+    local function reopen(store)
+      while #vim.api.nvim_list_tabpages() > 1 do
+        vim.cmd("tabclose")
+      end
+      vim.cmd("enew!")
+      state = open(store)
+    end
+
+    local function notes()
+      local ns = vim.api.nvim_create_namespace("GauntletComments")
+      return vim.api.nvim_buf_get_extmarks(
+        vim.api.nvim_win_get_buf(panes()[2]), ns, 0, -1, { details = true })
+    end
+
+    local function drawn_text()
+      local out = ""
+      for _, mark in ipairs(notes()) do
+        for _, line in ipairs(mark[4].virt_lines or {}) do
+          for _, chunk in ipairs(line) do
+            out = out .. chunk[1]
+          end
+        end
+      end
+      return out
+    end
+
+    it("draws someone else's thread against its line", function()
+      reopen({ fetched_at = "now", threads = { github_thread() } })
+      select_entry("change.txt")
+
+      assert.equals(1, #notes())
+      local text = drawn_text()
+      assert.is_truthy(text:find("loki", 1, true))
+      assert.is_truthy(text:find("why not local?", 1, true))
+      assert.is_truthy(text:find("thread", 1, true))
+    end)
+
+    it("shows them beside your own comments on the same line", function()
+      reopen({ fetched_at = "now", threads = { github_thread() } })
+      write_comment("and it needs a test")
+
+      local text = drawn_text()
+      assert.is_truthy(text:find("why not local?", 1, true))
+      assert.is_truthy(text:find("and it needs a test", 1, true))
+      assert.equals(2, #notes())
+    end)
+
+    it("hides a resolved thread", function()
+      reopen({ fetched_at = "now", threads = { github_thread({ resolved = true }) } })
+      select_entry("change.txt")
+      assert.equals(0, #notes())
+    end)
+
+    it("hides an outdated thread", function()
+      reopen({ fetched_at = "now", threads = { github_thread({ outdated = true }) } })
+      select_entry("change.txt")
+      assert.equals(0, #notes())
+    end)
+
+    it("reveals them on T, and hides them again", function()
+      reopen({ fetched_at = "now", threads = { github_thread({ resolved = true }) } })
+      select_entry("change.txt")
+      assert.equals(0, #notes())
+
+      vim.api.nvim_set_current_win(panes()[2])
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("T", true, false, true), "x", false)
+      assert.equals(1, #notes())
+      assert.is_truthy(drawn_text():find("resolved", 1, true))
+
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("T", true, false, true), "x", false)
+      assert.equals(0, #notes())
+    end)
+
+    it("counts open and settled separately in the file list", function()
+      reopen({
+        fetched_at = "now",
+        threads = {
+          github_thread({ id = "a" }),
+          github_thread({ id = "b", resolved = true }),
+          github_thread({ id = "c", outdated = true }),
+        },
+      })
+
+      local text = table.concat(sidebar_lines(), "\n")
+      assert.is_truthy(text:find("●1", 1, true), "one open thread")
+      assert.is_truthy(text:find("✓2", 1, true), "two settled threads")
+    end)
+
+    it("never draws a thread that has no line to sit on", function()
+      reopen({
+        fetched_at = "now",
+        threads = { github_thread({ subject = "file" }, { "line" }) },
+      })
+      select_entry("change.txt")
+
+      vim.api.nvim_set_current_win(panes()[2])
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("T", true, false, true), "x", false)
+      assert.equals(0, #notes())
+    end)
+
+    it("keeps them out of what gets submitted", function()
+      -- Only what you wrote is yours to send.
+      reopen({ fetched_at = "now", threads = { github_thread() } })
+      write_comment("mine")
+
+      local drafts = comments.drafts(state.comments)
+      assert.equals(1, #drafts)
+      assert.equals("mine", drafts[1].comments[1].body)
+    end)
+
+    it("puts a thread on the left-hand side when that is where it belongs", function()
+      reopen({
+        fetched_at = "now",
+        threads = { github_thread({ side = "LEFT", line = 1 }) },
+      })
+      select_entry("change.txt")
+
+      local ns = vim.api.nvim_create_namespace("GauntletComments")
+      local left = vim.api.nvim_buf_get_extmarks(
+        vim.api.nvim_win_get_buf(panes()[1]), ns, 0, -1, {})
+      assert.equals(1, #left)
+      assert.equals(0, #notes())
     end)
   end)
 end)

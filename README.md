@@ -86,6 +86,14 @@ Comments anchor to a line *and* a side (left is the base, right is the PR).
 GitHub only accepts comments on lines that are part of the diff, so `c`
 refuses a line that isn't rather than letting it fail at submission.
 
+The PR's existing threads are fetched when the review is first prepared and
+cached, so other people's comments are there offline too — drawn the same way,
+titled `thread` and naming each author. `T` shows or hides threads that are
+resolved or pinned to code since changed; those start hidden, as on GitHub, and
+the file list counts them apart (`●2` open, `✓1` settled). `:GauntletRefresh`
+fetches again; a failed fetch leaves the cache alone. Fetched threads are
+read-only for now — replying is a later step.
+
 Nothing leaves your machine until `:GauntletSubmit`, which sends the lot as a
 single GitHub review: a verdict, a covering note, and the line comments. If it
 fails, your comments are untouched and you can try again.

@@ -109,12 +109,26 @@ function M.prepare(repo, pr)
     return nil, err
   end
 
+  -- GitHub's own review threads, fetched the first time and cached after, so
+  -- that reconnecting to a review offline still shows the discussion.  A
+  -- failure here is not fatal: a review without the threads is still a review,
+  -- and :GauntletRefresh can try again.
+  local threads = require("gauntlet.threads")
+  local thread_store, thread_err = threads.load(review), nil
+  if not thread_store.fetched_at then
+    local fetched
+    fetched, thread_err = threads.refresh(repo, review)
+    thread_store = fetched or thread_store
+  end
+
   return {
     repo = repo,
     pr = pr,
     review = review,
     files = files,
     root = root,
+    threads = thread_store,
+    threads_error = thread_err,
   }
 end
 
@@ -169,6 +183,27 @@ function M.review(input)
       vim.notify("gauntlet: " .. serr, vim.log.levels.ERROR)
     end
   end)
+end
+
+--- Fetch this review's comment threads from GitHub again.
+---@param state table  a review, as returned by ui.review
+---@return boolean ok
+function M.refresh(state)
+  local threads = require("gauntlet.threads")
+  local store, err = threads.refresh(state.repo, state.review)
+  if not store then
+    vim.notify("gauntlet: could not fetch the comment threads: " .. err, vim.log.levels.ERROR)
+    return false
+  end
+
+  state.threads = store
+  require("gauntlet.ui").redraw(state)
+  vim.notify(
+    ("gauntlet: %d comment thread%s on #%d"):format(
+      #store.threads, #store.threads == 1 and "" or "s", state.pr.number),
+    vim.log.levels.INFO
+  )
+  return true
 end
 
 --- Remove a review from disk: its worktree, its ref, and its drafts.

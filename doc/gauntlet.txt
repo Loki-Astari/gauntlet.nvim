@@ -177,6 +177,29 @@ right-hand pane the pull request.  GitHub will only accept a comment on a line
 that is part of the diff, so `c` refuses a line that is not, rather than
 letting the rejection turn up later as a puzzle.
 
+                                                       *gauntlet-threads*
+The pull request's existing review threads are fetched when a review is first
+prepared, and cached, so other people's comments are there offline too.  They
+are drawn like your own, titled `thread` and naming who wrote each comment.
+
+    T                   Show or hide resolved and outdated threads.
+
+Resolved threads, and ones pinned to code the pull request has since changed,
+start hidden -- as they do on GitHub -- so that a long argument settled last
+week does not bury the diff.  The file list counts them apart: `●2` is two
+still open, `✓1` one settled.  A thread about a whole file rather than a line
+is counted but never drawn, having no line to sit against.
+
+                                                           *:GauntletRefresh*
+:GauntletRefresh        Fetch the comment threads again.
+
+Threads are fetched once and then read from the cache, so reopening a review
+needs no network.  This is how to ask for them again.  A failed fetch leaves
+the cache alone: a bad connection must not cost you the threads you had.
+
+Fetched threads are read-only, and kept in a file of their own so that
+fetching can never touch something you wrote.  Replying is not possible yet.
+
                                                             *:GauntletSubmit*
 :GauntletSubmit         Send this review to GitHub.
 
@@ -217,6 +240,7 @@ A review is kept at: >
     ~/.local/state/nvim/gauntlet/<repo>/pr-<n>/
         worktree/       the checkout, detached at the pull request's head
         comments.json   comments you have written but not yet sent
+        threads.json    GitHub's own threads, cached
         meta.json       base and head commits, and when they were fetched
 <
 The worktree is a *subdirectory* of the review rather than the review itself,

@@ -26,6 +26,17 @@ end, {
   desc = "Send this review's comments to GitHub as one review",
 })
 
+vim.api.nvim_create_user_command("GauntletRefresh", function()
+  local state = require("gauntlet.ui").current()
+  if not state then
+    vim.notify("gauntlet: no review here to refresh", vim.log.levels.ERROR)
+    return
+  end
+  require("gauntlet").refresh(state)
+end, {
+  desc = "Fetch this review's comment threads from GitHub again",
+})
+
 vim.api.nvim_create_user_command("GauntletDiscard", function(opts)
   require("gauntlet").discard(opts.args)
 end, {
