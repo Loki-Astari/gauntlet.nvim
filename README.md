@@ -92,9 +92,16 @@ The PR's existing threads are fetched when the review is first prepared and
 cached, so other people's comments are there offline too — drawn the same way,
 titled `thread` and naming each author. `T` shows or hides threads that are
 resolved or pinned to code since changed; those start hidden, as on GitHub, and
-the file list counts them apart (`●2` open, `✓1` settled). `:GauntletRefresh`
-fetches again; a failed fetch leaves the cache alone. Fetched threads are
+the file list counts them apart (`●2` open, `✓1` settled). Fetched threads are
 read-only for now — replying is a later step.
+
+A review is reconnected to from disk, which is what lets it be finished
+offline — and means it stays on the commit it was opened at.
+`:GauntletRefresh` is the one command that goes back to GitHub: it fetches the
+branch again, moves the worktree onto its current head so commits pushed since
+are in view, recomputes the file list and diffs, and fetches the threads. The
+file you were looking at stays on show; a failed thread fetch leaves the cache
+alone.
 
 Nothing leaves your machine until `:GauntletSubmit`, which sends the lot as a
 single GitHub review: a verdict, a covering note, and the line comments. If it

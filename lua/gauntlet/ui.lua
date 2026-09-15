@@ -680,6 +680,64 @@ function M.redraw(state)
   M.render_sidebar(state)
 end
 
+--- Draw a review whose content has moved underneath it: a new head commit,
+--- and so a new file list and new diffs.
+---
+--- redraw() is not enough for that.  It repaints what is already on screen,
+--- and after :GauntletRefresh what is on screen was read from the commit the
+--- review used to be on.
+---
+--- The file being looked at is followed by path rather than by sidebar line,
+--- because a new commit can add or drop files above it.  One the new head no
+--- longer touches has nothing left to show, so that falls back to the
+--- conversation.
+---@param state table
+function M.reload(state)
+  -- The right-hand pane of a diff is the real file in the worktree, and the
+  -- worktree has just been moved onto another commit.  Neovim is still
+  -- holding the old contents, so drop those buffers rather than trusting
+  -- :edit to notice the file changed under it.
+  local inside = vim.fs.normalize(state.review.worktree) .. "/"
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local name = vim.api.nvim_buf_get_name(buf)
+    if name ~= "" and vim.startswith(vim.fs.normalize(name), inside) then
+      pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    end
+  end
+
+  local showing = state.diff and state.diff.file.path
+  M.render_sidebar(state)
+
+  local target_line, target
+  for line, entry in pairs(state.lines) do
+    if showing and entry.kind == "file" and entry.file.path == showing then
+      target_line, target = line, entry
+      break
+    end
+  end
+  if not target then
+    for line, entry in pairs(state.lines) do
+      if entry.kind == "conversation" then
+        target_line, target = line, entry
+        break
+      end
+    end
+  end
+
+  state.current = target_line
+  if target and target.kind == "file" then
+    show_diff(state, target.file)
+  else
+    show_conversation(state)
+  end
+
+  if target_line then
+    pcall(vim.api.nvim_win_set_cursor, state.sidebar_win, { target_line, 0 })
+  end
+  vim.api.nvim_set_current_win(state.sidebar_win)
+  M.render_sidebar(state)
+end
+
 --- Show or hide the threads that are resolved or outdated.
 ---@param state table
 function M.toggle_settled(state)

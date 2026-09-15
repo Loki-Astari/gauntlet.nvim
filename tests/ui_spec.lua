@@ -137,6 +137,65 @@ describe("gauntlet.ui", function()
     end)
   end)
 
+  describe("reloading after new commits", function()
+    -- :GauntletRefresh moves the worktree onto the branch's current head and
+    -- then calls ui.reload, which has to rebuild what was read from the old
+    -- one.  The worktree move itself is covered in worktree_spec.
+
+    it("rebuilds the file list", function()
+      table.insert(state.files, {
+        path = "later.txt", status = "A", additions = 1, deletions = 0, binary = false,
+      })
+      table.sort(state.files, function(a, b)
+        return a.path < b.path
+      end)
+      ui.reload(state)
+
+      local text = table.concat(sidebar_lines(), "\n")
+      assert.is_truthy(text:find("Files (5)", 1, true))
+      assert.is_truthy(text:find("A later.txt", 1, true))
+    end)
+
+    it("keeps the file on show, even when it has moved up the list", function()
+      select_entry("new.txt")
+      table.remove(state.files, 1) -- big.txt, above it in the list
+      ui.reload(state)
+
+      assert.equals("new.txt", state.diff.file.path)
+      assert.equals(2, #panes())
+      assert.same({ "fresh" }, vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(panes()[2]), 0, -1, false))
+      assert.equals(line_of("new.txt"), state.current)
+    end)
+
+    it("falls back to the conversation when the new head drops that file", function()
+      select_entry("new.txt")
+      state.files = vim.tbl_filter(function(file)
+        return file.path ~= "new.txt"
+      end, state.files)
+      ui.reload(state)
+
+      assert.is_nil(state.diff)
+      assert.equals(1, #panes())
+      local buf = vim.api.nvim_win_get_buf(panes()[1])
+      assert.equals("# #142  Fix off-by-one in ring buffer", vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1])
+      assert.equals(line_of("Conversation"), state.current)
+    end)
+
+    it("re-reads the worktree rather than trusting the buffer it has", function()
+      -- The right-hand pane is the real file, and the worktree has just been
+      -- reset onto another commit underneath it.
+      select_entry("change.txt")
+      vim.fn.writefile({ "alpha", "BETA", "gamma", "delta" },
+        vim.fs.joinpath(state.review.worktree, "change.txt"))
+      ui.reload(state)
+
+      assert.same(
+        { "alpha", "BETA", "gamma", "delta" },
+        vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(panes()[2]), 0, -1, false)
+      )
+    end)
+  end)
+
   describe("selecting a file", function()
     it("shows both sides side by side, in diff mode", function()
       select_entry("change.txt")

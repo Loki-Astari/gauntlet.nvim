@@ -191,11 +191,27 @@ still open, `✓1` one settled.  A thread about a whole file rather than a line
 is counted but never drawn, having no line to sit against.
 
                                                            *:GauntletRefresh*
-:GauntletRefresh        Fetch the comment threads again.
+:GauntletRefresh        Bring the review up to date with GitHub.
 
-Threads are fetched once and then read from the cache, so reopening a review
-needs no network.  This is how to ask for them again.  A failed fetch leaves
-the cache alone: a bad connection must not cost you the threads you had.
+Everything else a review does is answered from disk, which is what lets one be
+finished with no network -- and what leaves it on the commit it was opened at.
+This is the one command that goes and looks.  It fetches:
+
+  - the pull request's branch again, and moves the worktree onto whatever its
+    head is now, so commits pushed since the review started come into view;
+  - the file list and both sides of every diff, recomputed against the new
+    head and its merge base;
+  - the comment threads.
+
+The file you are looking at stays on show, followed by its path rather than by
+its place in the list, since a new commit can add or drop files above it.  One
+the new head no longer touches has nothing left to show, so the review falls
+back to the conversation.
+
+A failed thread fetch leaves the cache alone -- a bad connection must not cost
+you the threads you had -- and the new commits are shown regardless.  Comments
+you have drafted are kept, still anchored to the line and side you wrote them
+against; check them if the code under them has moved.
 
 Fetched threads are read-only, and kept in a file of their own so that
 fetching can never touch something you wrote.  Replying is not possible yet.
@@ -248,7 +264,9 @@ so that nothing gauntlet writes ever appears in the worktree's `git status`,
 where it could be committed by accident.
 
 Reviews persist.  Opening one again reconnects to what is already on disk and
-needs no network at all.
+needs no network at all -- and so shows the commit it was opened at, however
+much the branch has moved on since.  |:GauntletRefresh| is what fetches the
+branch again and resets the worktree onto its current head.
 
                                                              *:GauntletDiscard*
 :GauntletDiscard        Remove the current review from disk: its worktree, its

@@ -82,6 +82,62 @@ describe("gauntlet.worktree", function()
     assert.same({ "change.txt", "gone.txt", "new.txt" }, paths)
   end)
 
+  it("moves the review onto commits pushed since it started", function()
+    -- The bug this covers: a review opened at one commit stayed there, and
+    -- refreshing it fetched only the comment threads.
+    local review = assert(worktree.open(repo, pr))
+    assert.equals(fixture.head, review.head)
+
+    local head = helpers.push_to_pr(fixture, 1, "later.txt", "pushed after the review started")
+    pr.headRefOid = head
+
+    -- open() still answers from meta.json without the network, which is what
+    -- makes a review work offline -- and why it needs telling to catch up.
+    assert.equals(fixture.head, assert(worktree.open(repo, pr)).head)
+
+    local updated = assert(worktree.update(repo, pr))
+    assert.equals(head, updated.head)
+    assert.equals(review.worktree, updated.worktree)
+    assert.equals(
+      "pushed after the review started",
+      vim.fn.readfile(vim.fs.joinpath(updated.worktree, "later.txt"))[1]
+    )
+
+    local paths = vim.tbl_map(function(f)
+      return f.path
+    end, assert(changes.list(fixture.root, updated.base, updated.head)))
+    assert.same({ "change.txt", "gone.txt", "later.txt", "new.txt" }, paths)
+  end)
+
+  it("records the new head, so a later reconnect starts from it", function()
+    worktree.open(repo, pr)
+    local head = helpers.push_to_pr(fixture, 1, "later.txt", "later")
+    pr.headRefOid = head
+    worktree.update(repo, pr)
+
+    assert.equals(head, assert(worktree.open(repo, pr)).head)
+
+    local meta = vim.json.decode(
+      table.concat(vim.fn.readfile(vim.fs.joinpath(worktree.dir(repo, 1), "meta.json")), "\n")
+    )
+    assert.equals(head, meta.head)
+  end)
+
+  it("leaves nothing behind in the worktree when it moves", function()
+    worktree.open(repo, pr)
+    pr.headRefOid = helpers.push_to_pr(fixture, 1, "later.txt", "later")
+    local updated = assert(worktree.update(repo, pr))
+
+    local status = vim.fn.systemlist({ "git", "-C", updated.worktree, "status", "--porcelain" })
+    assert.same({}, status)
+  end)
+
+  it("creates the worktree when update() is the first thing asked for", function()
+    local review = assert(worktree.update(repo, pr))
+    assert.equals(fixture.head, review.head)
+    assert.equals(1, vim.fn.isdirectory(review.worktree))
+  end)
+
   it("removes the worktree, the ref and its own files", function()
     local review = assert(worktree.open(repo, pr))
     assert.is_true((worktree.remove(repo, 1)))

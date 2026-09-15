@@ -34,7 +34,7 @@ vim.api.nvim_create_user_command("GauntletRefresh", function()
   end
   require("gauntlet").refresh(state)
 end, {
-  desc = "Fetch this review's comment threads from GitHub again",
+  desc = "Fetch this review's new commits and comment threads from GitHub",
 })
 
 vim.api.nvim_create_user_command("GauntletDiscard", function(opts)
