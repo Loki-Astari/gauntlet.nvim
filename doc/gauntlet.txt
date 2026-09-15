@@ -254,25 +254,44 @@ Fetched threads are read-only, and kept in a file of their own so that
 fetching can never touch something you wrote.  Replying is not possible yet.
 
                                            *gauntlet-sending* *:GauntletPush*
-:GauntletPush           Send the comments written since the last send, with
-                        no verdict.
+:GauntletPush           Send the comments written since the last send, and
+                        nothing else.  Asks for nothing and sends at once.
+
+                                                              *:GauntletNote*
+:GauntletNote           Write something about the pull request as a whole,
+                        and send it -- with anything still unsent under it.
 
                                                            *:GauntletApprove*
 :GauntletApprove        Approve the pull request.
                                                             *:GauntletReject*
 :GauntletReject         Ask for changes.
                                                             *:GauntletSubmit*
-:GauntletSubmit         Choose one of the three, when you have not decided
+:GauntletSubmit         Choose one of the four, when you have not decided
                         which yet.
 
 Nothing leaves the machine until one of these.  Comments are written offline,
 kept in the review directory, and go to GitHub as GitHub models a review: a
-verdict, a covering note, and the line comments in a single request.
+verdict, a covering note, and the line comments together.
 
-Each of them opens a buffer for the covering note.  `:w` sends; `:q` calls it
-off.  GitHub requires a note to comment or to request changes, and does not
-to approve, so `:w` on an empty note sends an approval and refuses the other
-two.
+|:GauntletPush| is the everyday one, and it asks for nothing: the comments say
+what they have to say where they sit, and stopping to write a summary over
+them is a toll on the common case.  The others open a buffer for the note --
+`:w` sends, `:q` calls it off -- but none of them insists you write in it.  An
+empty note is a review with no covering words, which is a perfectly ordinary
+thing to leave.
+
+                                                       *gauntlet-two-steps*
+GitHub does demand a note when a review is created outright with a COMMENT or
+REQUEST_CHANGES verdict.  A review created with *no* verdict does not need
+one -- that is a draft, which nobody else can see -- and neither does the
+verdict given to it afterwards.  So a send with nothing written over it goes
+in two steps rather than one, which is what GitHub's own web interface does
+when you start a review, add comments to it, and finish it.  Approving takes
+one step either way, GitHub asking nothing of an approval.
+
+Should the second step fail, the comments are sitting in a draft review on
+GitHub.  Its id is kept, nothing is marked as sent, and the next send submits
+that draft rather than starting another, so nothing is said twice.
 
 Only comments you have not already sent go, so a verdict after a push carries
 whatever was written since, and pushing twice in a row sends nothing the

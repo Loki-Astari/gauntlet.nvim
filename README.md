@@ -133,17 +133,29 @@ Nothing leaves your machine until you say so:
 
 | | |
 | --- | --- |
-| `:GauntletPush` | send the comments written since the last send, no verdict |
+| `:GauntletPush` | send the comments written since the last send, and nothing else |
+| `:GauntletNote` | write something about the PR as a whole, and send it |
 | `:GauntletApprove` | approve |
 | `:GauntletReject` | ask for changes |
-| `:GauntletSubmit` | pick one of the three |
+| `:GauntletSubmit` | pick one of the four |
 
-Each opens a buffer for the covering note — `:w` sends, `:q` calls it off — and
-goes to GitHub as GitHub models a review: a verdict, a note, and the line
-comments in one request. Only comments you haven't already sent go, so a
-verdict after a push carries whatever you wrote since, and approving needs no
-separate sync — the comments ride along with it and can't be left behind by a
-failure halfway.
+`:GauntletPush` is the everyday one and it asks for nothing — the comments say
+what they have to say where they sit, and stopping to write a summary over them
+is a toll on the common case. The others open a buffer for the note (`:w`
+sends, `:q` calls it off), but none of them insists you write in it.
+
+Only comments you haven't already sent go, so a verdict after a push carries
+whatever you wrote since, and approving needs no separate sync — the comments
+ride along with it.
+
+GitHub *does* demand a note when a review is created outright with a comment or
+request-changes verdict. A review created with no verdict doesn't need one —
+that's a draft only you can see — and neither does the verdict given to it
+after. So a send with nothing written over it goes in two steps instead of one,
+which is exactly what GitHub's web UI does when you start a review, add
+comments and finish it. If the second step fails, the draft's id is kept and
+the next send submits it rather than starting another, so nothing is said
+twice.
 
 Two things are checked first. That every comment still sits on a line of the
 diff, because GitHub refuses a whole review over one it can't place. And that

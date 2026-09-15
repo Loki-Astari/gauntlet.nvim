@@ -853,7 +853,26 @@ describe("gauntlet.ui", function()
     local threads = require("gauntlet.threads")
     local gauntlet = require("gauntlet")
 
-    local posted, handed_back, real
+    local calls, handed_back, real
+
+    --- The payload of the request that carried the line comments.
+    local function posted()
+      for _, call in ipairs(calls) do
+        if call.kind == "create" then
+          return call.payload
+        end
+      end
+      return {}
+    end
+
+    --- The verdict the review ended up with, whichever step gave it.
+    local function verdict()
+      for index = #calls, 1, -1 do
+        if calls[index].payload.event then
+          return calls[index].payload.event
+        end
+      end
+    end
 
     local function composer_win()
       -- plenary runs after_each for every test in the file, not just this
@@ -895,10 +914,11 @@ describe("gauntlet.ui", function()
     end
 
     before_each(function()
-      posted = nil
+      calls = {}
       -- GitHub hands a sent comment back as a thread, as it does in life.
       handed_back = true
       real = {
+        create_review = github.create_review,
         submit_review = github.submit_review,
         get_open = github.get_open,
         fetch = threads.fetch,
@@ -906,16 +926,20 @@ describe("gauntlet.ui", function()
       github.get_open = function()
         return { number = state.pr.number, state = "OPEN", headRefOid = fixture.head }
       end
-      github.submit_review = function(_, _, payload)
-        posted = payload
+      github.create_review = function(_, _, payload)
+        table.insert(calls, { kind = "create", payload = payload })
         return { id = 99 }
+      end
+      github.submit_review = function(_, _, id, payload)
+        table.insert(calls, { kind = "submit", id = id, payload = payload })
+        return { id = id }
       end
       threads.fetch = function()
         if not handed_back then
           return {}
         end
         local out = {}
-        for _, comment in ipairs((posted or {}).comments or {}) do
+        for _, comment in ipairs(posted().comments or {}) do
           table.insert(out, {
             id = "PRRT_sent",
             origin = "github",
@@ -933,6 +957,7 @@ describe("gauntlet.ui", function()
     end)
 
     after_each(function()
+      github.create_review = real.create_review
       github.submit_review, github.get_open = real.submit_review, real.get_open
       threads.fetch = real.fetch
 
@@ -946,22 +971,33 @@ describe("gauntlet.ui", function()
       end
     end)
 
-    it("opens no note buffer when there is nothing new to push", function()
+    it("sends nothing, and asks for nothing, when there is nothing new", function()
       gauntlet.push(state)
       assert.is_nil(composer_win())
-      assert.is_nil(posted)
+      assert.same({}, calls)
     end)
 
-    it("pushes the new comments with no verdict", function()
+    it("pushes the comments without asking for a note", function()
+      -- The point of the command: the comments say what they have to say
+      -- where they sit.
       write_comment("needs a test")
       gauntlet.push(state)
-      note("a few notes")
 
-      assert.equals("COMMENT", posted.event)
-      assert.equals("a few notes", posted.body)
-      assert.equals(1, #posted.comments)
-      assert.equals("needs a test", posted.comments[1].body)
-      assert.is_nil(composer_win())
+      assert.is_nil(composer_win(), "push should open no note buffer at all")
+      assert.equals("COMMENT", verdict())
+      assert.equals(1, #posted().comments)
+      assert.equals("needs a test", posted().comments[1].body)
+    end)
+
+    it("takes a note of its own when one is wanted", function()
+      write_comment("needs a test")
+      gauntlet.note(state)
+      assert.is_truthy(composer_win(), "a note should be asked for")
+      note("a few thoughts overall")
+
+      assert.equals("COMMENT", verdict())
+      assert.equals("a few thoughts overall", posted().body)
+      assert.equals(1, #posted().comments)
     end)
 
     it("approves, carrying anything still unsent with it", function()
@@ -969,16 +1005,16 @@ describe("gauntlet.ui", function()
       gauntlet.approve(state)
       note("")
 
-      assert.equals("APPROVE", posted.event)
-      assert.equals(1, #posted.comments)
+      assert.equals("APPROVE", verdict())
+      assert.equals(1, #posted().comments)
     end)
 
     it("requests changes", function()
       gauntlet.reject(state)
       note("not yet")
 
-      assert.equals("REQUEST_CHANGES", posted.event)
-      assert.equals("not yet", posted.body)
+      assert.equals("REQUEST_CHANGES", verdict())
+      assert.equals("not yet", posted().body)
     end)
 
     it("draws a sent comment once, not twice", function()
@@ -988,7 +1024,6 @@ describe("gauntlet.ui", function()
       assert.equals(1, select(2, drawn():gsub("needs a test", "")))
 
       gauntlet.push(state)
-      note("a few notes")
       select_entry("change.txt")
 
       assert.equals(1, select(2, drawn():gsub("needs a test", "")))
@@ -1001,7 +1036,6 @@ describe("gauntlet.ui", function()
       handed_back = false
       write_comment("needs a test")
       gauntlet.push(state)
-      note("a few notes")
       select_entry("change.txt")
 
       assert.equals(1, #state.comments.threads)
@@ -1011,7 +1045,7 @@ describe("gauntlet.ui", function()
 
     it("leaves the note where it is when the send fails", function()
       write_comment("needs a test")
-      github.submit_review = function()
+      github.create_review = function()
         return nil, "Can not approve your own pull request"
       end
 

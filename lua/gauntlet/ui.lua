@@ -1000,7 +1000,9 @@ function M.submit(state)
   local send = require("gauntlet.send")
   local drafts = comments.drafts(state.comments)
 
-  local verdicts = {}
+  local verdicts = {
+    { label = "Push -- the line comments on their own", push = true },
+  }
   for _, event in ipairs(send.ORDER) do
     table.insert(verdicts, { event = event, label = send.EVENTS[event].label })
   end
@@ -1012,10 +1014,41 @@ function M.submit(state)
       return item.label
     end,
   }, function(choice)
-    if choice then
+    if not choice then
+      return
+    end
+    if choice.push then
+      require("gauntlet").push(state)
+    else
       M.compose(state, choice.event)
     end
   end)
+end
+
+--- What follows a send, whether or not a note was written over it.
+---@param state table
+---@param sent table  as gauntlet.send.send returns
+function M.delivered(state, sent)
+  local send = require("gauntlet.send")
+
+  -- GitHub owns those comments now.  Fetching the threads back is what lets
+  -- the drafts go, and what puts your own words on the line as the thread
+  -- they have become.
+  local _, ferr = require("gauntlet").settle(state)
+  if ferr then
+    vim.notify("gauntlet: sent, but could not fetch the threads back: " .. ferr, vim.log.levels.WARN)
+  end
+  M.redraw(state)
+
+  vim.notify(
+    ("gauntlet: %s #%d%s"):format(
+      send.EVENTS[sent.event].done,
+      state.pr.number,
+      sent.drafts > 0
+          and (", with %d comment%s"):format(sent.drafts, sent.drafts == 1 and "" or "s")
+        or ""),
+    vim.log.levels.INFO
+  )
 end
 
 --- Write the covering note, then send.  `:w` sends; `:q` calls it off.
@@ -1028,10 +1061,8 @@ end
 ---@param event string  a key of gauntlet.send.EVENTS
 function M.compose(state, event)
   local send = require("gauntlet.send")
-  local gauntlet = require("gauntlet")
 
-  local spec = send.EVENTS[event]
-  if not spec then
+  if not send.EVENTS[event] then
     vim.notify(("gauntlet: %s is not a verdict"):format(tostring(event)), vim.log.levels.ERROR)
     return
   end
@@ -1073,28 +1104,7 @@ function M.compose(state, event)
 
       vim.bo[buf].modified = false
       pcall(vim.api.nvim_win_close, win, true)
-
-      -- GitHub owns those comments now.  Fetching the threads back is what
-      -- lets the drafts go, and what puts your own words on the line as the
-      -- thread they have become.
-      local _, ferr = gauntlet.settle(state)
-      if ferr then
-        vim.notify(
-          "gauntlet: sent, but could not fetch the threads back: " .. ferr,
-          vim.log.levels.WARN
-        )
-      end
-      M.redraw(state)
-
-      vim.notify(
-        ("gauntlet: %s #%d%s"):format(
-          spec.done,
-          state.pr.number,
-          sent.drafts > 0
-              and (", with %d comment%s"):format(sent.drafts, sent.drafts == 1 and "" or "s")
-            or ""),
-        vim.log.levels.INFO
-      )
+      M.delivered(state, sent)
     end,
   })
 
