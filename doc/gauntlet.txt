@@ -10,6 +10,7 @@ CONTENTS                                                    *gauntlet-contents*
   5. The terminal command .. |gauntlet-vig|
   6. The review view ....... |gauntlet-review|
   7. Comments .............. |gauntlet-comments|
+     Sending a review ..... |gauntlet-sending|
   8. The review worktree ... |gauntlet-worktree|
   9. Errors ................ |gauntlet-errors|
  10. Configuration ......... |gauntlet-configuration|
@@ -221,18 +222,57 @@ against; check them if the code under them has moved.
 Fetched threads are read-only, and kept in a file of their own so that
 fetching can never touch something you wrote.  Replying is not possible yet.
 
+                                           *gauntlet-sending* *:GauntletPush*
+:GauntletPush           Send the comments written since the last send, with
+                        no verdict.
+
+                                                           *:GauntletApprove*
+:GauntletApprove        Approve the pull request.
+                                                            *:GauntletReject*
+:GauntletReject         Ask for changes.
                                                             *:GauntletSubmit*
-:GauntletSubmit         Send this review to GitHub.
+:GauntletSubmit         Choose one of the three, when you have not decided
+                        which yet.
 
-Nothing leaves the machine until then.  Comments are written offline, kept in
-the review directory, and go to GitHub together as a single review, which is
-how GitHub models one: a verdict -- comment, approve, or request changes -- a
-covering note, and the line comments.  `:w` in the covering note sends it;
-`:q` calls it off.
+Nothing leaves the machine until one of these.  Comments are written offline,
+kept in the review directory, and go to GitHub as GitHub models a review: a
+verdict, a covering note, and the line comments in a single request.
 
-If sending fails the comments are left exactly as they were, so it can simply
-be tried again.  Comments that have been sent are kept, marked as sent, so
-the review still shows what was said.
+Each of them opens a buffer for the covering note.  `:w` sends; `:q` calls it
+off.  GitHub requires a note to comment or to request changes, and does not
+to approve, so `:w` on an empty note sends an approval and refuses the other
+two.
+
+Only comments you have not already sent go, so a verdict after a push carries
+whatever was written since, and pushing twice in a row sends nothing the
+second time.  Approving and rejecting therefore need no separate sync: the
+comments ride along with the verdict, in the one request, and cannot be left
+behind by a failure halfway.
+
+Before anything is sent, two things are checked:
+
+  - that every comment still sits on a line of the diff.  GitHub refuses a
+    whole review over a single comment it will not place, taking the verdict
+    and the other comments with it, so a comment whose line the pull request
+    has since changed is named here instead, and nothing is sent.
+
+  - that the branch has not moved since the review was opened.  Approving a
+    pull request that is no longer the one on screen is the failure worth
+    preventing.  Refreshing at that moment would swap the diff out from under
+    a verdict just given, so this stops and asks for |:GauntletRefresh|.
+
+If sending fails, nothing has left the machine: the comments are untouched
+and the covering note is still in its buffer, so it can be written again once
+whatever GitHub objected to is dealt with.  GitHub will not let you approve
+your own pull request, and says so.
+
+                                                  *gauntlet-comments-sent*
+A comment that has been sent exists twice: as yours, here, and as a thread
+fetched back from GitHub.  The fetched one wins -- it is the one that can
+gain replies and be resolved -- so after a successful send the threads are
+fetched again and the local copy is dropped.  It is dropped only once its
+double has actually arrived, so a fetch that fails costs nothing: the comment
+stays, marked as sent, until a later |:GauntletRefresh| finds it.
 
 Comments are stored as *threads*, each holding a list of comments, even though
 one you write has a single comment in it.  A thread fetched from GitHub is the

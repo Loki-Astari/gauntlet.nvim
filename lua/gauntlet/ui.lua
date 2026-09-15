@@ -862,40 +862,55 @@ function M.review(ctx)
   return state
 end
 
---- Send the drafts to GitHub as one review.
----
---- Nothing has left this machine until now: the verdict and the covering note
---- are asked for here, and the line comments go with them in a single request.
+--- Choose a verdict, then write the note and send.
+--- The three verdicts also have commands of their own; this is the way in
+--- when you have not decided which yet.
 ---@param state table
 function M.submit(state)
-  local github = require("gauntlet.github")
+  local send = require("gauntlet.send")
   local drafts = comments.drafts(state.comments)
 
-  local verdicts = {
-    { label = "Comment — leave the comments without a verdict", event = "COMMENT" },
-    { label = "Approve", event = "APPROVE" },
-    { label = "Request changes", event = "REQUEST_CHANGES" },
-  }
+  local verdicts = {}
+  for _, event in ipairs(send.ORDER) do
+    table.insert(verdicts, { event = event, label = send.EVENTS[event].label })
+  end
 
   vim.ui.select(verdicts, {
-    prompt = ("Submit %d comment%s on #%d as:"):format(
+    prompt = ("Send %d new comment%s on #%d as:"):format(
       #drafts, #drafts == 1 and "" or "s", state.pr.number),
     format_item = function(item)
       return item.label
     end,
   }, function(choice)
     if choice then
-      M.compose_review(state, choice.event, drafts)
+      M.compose(state, choice.event)
     end
   end)
 end
 
---- Write the covering note, then send.  `:w` submits; `:q` calls it off.
+--- Write the covering note, then send.  `:w` sends; `:q` calls it off.
+---
+--- Everything that can be judged without the network is judged before the
+--- buffer opens, so a refusal never arrives after a note has been written.
+--- What is left -- has the branch moved, will GitHub take it -- is answered
+--- on `:w`, and leaves the note where it is so it can be tried again.
 ---@param state table
----@param event string
----@param drafts table[]
-function M.compose_review(state, event, drafts)
-  local github = require("gauntlet.github")
+---@param event string  a key of gauntlet.send.EVENTS
+function M.compose(state, event)
+  local send = require("gauntlet.send")
+  local gauntlet = require("gauntlet")
+
+  local spec = send.EVENTS[event]
+  if not spec then
+    vim.notify(("gauntlet: %s is not a verdict"):format(tostring(event)), vim.log.levels.ERROR)
+    return
+  end
+
+  local ok, err = send.ready(state, event)
+  if not ok then
+    vim.notify("gauntlet: " .. err, vim.log.levels.WARN)
+    return
+  end
 
   vim.cmd("botright split")
   local win = vim.api.nvim_get_current_win()
@@ -914,42 +929,40 @@ function M.compose_review(state, event, drafts)
 
   vim.api.nvim_create_autocmd("BufWriteCmd", {
     buffer = buf,
-    desc = "Gauntlet: submit this review",
+    desc = "Gauntlet: send this review",
     callback = function()
-      local body = vim.trim(table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n"))
-      if body == "" and #drafts == 0 then
-        vim.notify("gauntlet: nothing to submit", vim.log.levels.WARN)
+      local body = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+
+      local sent, serr = send.send(state, event, body)
+      if not sent then
+        -- Nothing left this machine, and the note is still here: fix what the
+        -- message says and write again.
+        vim.notify("gauntlet: could not send: " .. serr, vim.log.levels.ERROR)
         return
       end
-
-      local review, err = github.submit_review(state.repo, state.pr.number, {
-        commit_id = state.review.head,
-        body = body,
-        event = event,
-        comments = github.review_comments(drafts),
-      })
-      if not review then
-        -- The drafts are untouched, so this can simply be tried again.
-        vim.notify("gauntlet: could not submit: " .. err, vim.log.levels.ERROR)
-        return
-      end
-
-      -- Sent: mark them so, rather than deleting them, so the review still
-      -- shows what was said.
-      for _, thread in ipairs(drafts) do
-        for _, comment in ipairs(thread.comments or {}) do
-          comment.state = "published"
-        end
-      end
-      comments.save(state.review, state.comments)
 
       vim.bo[buf].modified = false
       pcall(vim.api.nvim_win_close, win, true)
-      annotate(state)
-      M.render_sidebar(state)
+
+      -- GitHub owns those comments now.  Fetching the threads back is what
+      -- lets the drafts go, and what puts your own words on the line as the
+      -- thread they have become.
+      local _, ferr = gauntlet.settle(state)
+      if ferr then
+        vim.notify(
+          "gauntlet: sent, but could not fetch the threads back: " .. ferr,
+          vim.log.levels.WARN
+        )
+      end
+      M.redraw(state)
+
       vim.notify(
-        ("gauntlet: submitted %d comment%s on #%d"):format(
-          #drafts, #drafts == 1 and "" or "s", state.pr.number),
+        ("gauntlet: %s #%d%s"):format(
+          spec.done,
+          state.pr.number,
+          sent.drafts > 0
+              and (", with %d comment%s"):format(sent.drafts, sent.drafts == 1 and "" or "s")
+            or ""),
         vim.log.levels.INFO
       )
     end,

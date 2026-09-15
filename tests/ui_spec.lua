@@ -656,4 +656,172 @@ describe("gauntlet.ui", function()
       assert.equals(0, #notes())
     end)
   end)
+
+  describe("sending a review", function()
+    local comments = require("gauntlet.comments")
+    local github = require("gauntlet.github")
+    local threads = require("gauntlet.threads")
+    local gauntlet = require("gauntlet")
+
+    local posted, handed_back, real
+
+    local function composer_win()
+      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(state.tab)) do
+        if vim.bo[vim.api.nvim_win_get_buf(win)].buftype == "acwrite" then
+          return win
+        end
+      end
+    end
+
+    --- Write the covering note and send.
+    local function note(text)
+      local win = assert(composer_win(), "no note buffer opened")
+      vim.api.nvim_buf_set_lines(vim.api.nvim_win_get_buf(win), 0, -1, false,
+        vim.split(text, "\n", { plain = true }))
+      vim.api.nvim_set_current_win(win)
+      vim.cmd("write")
+    end
+
+    local function drawn()
+      local ns = vim.api.nvim_create_namespace("GauntletComments")
+      local out = ""
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        vim.api.nvim_win_get_buf(panes()[2]), ns, 0, -1, { details = true })) do
+        for _, line in ipairs(mark[4].virt_lines or {}) do
+          for _, chunk in ipairs(line) do
+            out = out .. chunk[1]
+          end
+        end
+      end
+      return out
+    end
+
+    before_each(function()
+      posted = nil
+      -- GitHub hands a sent comment back as a thread, as it does in life.
+      handed_back = true
+      real = {
+        submit_review = github.submit_review,
+        get_open = github.get_open,
+        fetch = threads.fetch,
+      }
+      github.get_open = function()
+        return { number = state.pr.number, state = "OPEN", headRefOid = fixture.head }
+      end
+      github.submit_review = function(_, _, payload)
+        posted = payload
+        return { id = 99 }
+      end
+      threads.fetch = function()
+        if not handed_back then
+          return {}
+        end
+        local out = {}
+        for _, comment in ipairs((posted or {}).comments or {}) do
+          table.insert(out, {
+            id = "PRRT_sent",
+            origin = "github",
+            path = comment.path,
+            side = comment.side,
+            line = comment.line,
+            resolved = false,
+            outdated = false,
+            subject = "line",
+            comments = { { author = "loki", body = comment.body, state = "published" } },
+          })
+        end
+        return out
+      end
+    end)
+
+    after_each(function()
+      github.submit_review, github.get_open = real.submit_review, real.get_open
+      threads.fetch = real.fetch
+
+      -- A failed send leaves the note open and modified on purpose, so that
+      -- it can be tried again.  Teardown closes the tab page, which a
+      -- modified buffer would refuse.
+      local win = composer_win()
+      if win then
+        vim.bo[vim.api.nvim_win_get_buf(win)].modified = false
+        pcall(vim.api.nvim_win_close, win, true)
+      end
+    end)
+
+    it("opens no note buffer when there is nothing new to push", function()
+      gauntlet.push(state)
+      assert.is_nil(composer_win())
+      assert.is_nil(posted)
+    end)
+
+    it("pushes the new comments with no verdict", function()
+      write_comment("needs a test")
+      gauntlet.push(state)
+      note("a few notes")
+
+      assert.equals("COMMENT", posted.event)
+      assert.equals("a few notes", posted.body)
+      assert.equals(1, #posted.comments)
+      assert.equals("needs a test", posted.comments[1].body)
+      assert.is_nil(composer_win())
+    end)
+
+    it("approves, carrying anything still unsent with it", function()
+      write_comment("one more thing")
+      gauntlet.approve(state)
+      note("")
+
+      assert.equals("APPROVE", posted.event)
+      assert.equals(1, #posted.comments)
+    end)
+
+    it("requests changes", function()
+      gauntlet.reject(state)
+      note("not yet")
+
+      assert.equals("REQUEST_CHANGES", posted.event)
+      assert.equals("not yet", posted.body)
+    end)
+
+    it("draws a sent comment once, not twice", function()
+      -- It exists on both sides now: as a draft marked sent, and as the
+      -- thread GitHub handed back.  Only one of them may be drawn.
+      write_comment("needs a test")
+      assert.equals(1, select(2, drawn():gsub("needs a test", "")))
+
+      gauntlet.push(state)
+      note("a few notes")
+      select_entry("change.txt")
+
+      assert.equals(1, select(2, drawn():gsub("needs a test", "")))
+      assert.is_truthy(drawn():find("loki", 1, true))
+      assert.same({}, state.comments.threads)
+    end)
+
+    it("keeps the comment when GitHub has not handed it back yet", function()
+      -- Dropping it before its double arrives would leave the line bare.
+      handed_back = false
+      write_comment("needs a test")
+      gauntlet.push(state)
+      note("a few notes")
+      select_entry("change.txt")
+
+      assert.equals(1, #state.comments.threads)
+      assert.is_truthy(drawn():find("needs a test", 1, true))
+      assert.same({}, comments.drafts(state.comments))
+    end)
+
+    it("leaves the note where it is when the send fails", function()
+      write_comment("needs a test")
+      github.submit_review = function()
+        return nil, "Can not approve your own pull request"
+      end
+
+      gauntlet.approve(state)
+      note("looks good")
+
+      assert.is_truthy(composer_win(), "the note should still be open to try again")
+      assert.equals(1, #comments.drafts(state.comments))
+    end)
+  end)
 end)

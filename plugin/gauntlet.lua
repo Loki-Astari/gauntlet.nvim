@@ -15,24 +15,59 @@ end, {
   desc = "Review a GitHub pull request (by number or URL; no argument lists open PRs)",
 })
 
-vim.api.nvim_create_user_command("GauntletSubmit", function()
+--- The commands that act on the review under the cursor all need one.
+---@param what string  what the command would have done, for the message
+---@return table|nil state
+local function review(what)
   local state = require("gauntlet.ui").current()
   if not state then
-    vim.notify("gauntlet: no review here to submit", vim.log.levels.ERROR)
-    return
+    vim.notify(("gauntlet: no review here to %s"):format(what), vim.log.levels.ERROR)
+    return nil
   end
-  require("gauntlet.ui").submit(state)
+  return state
+end
+
+vim.api.nvim_create_user_command("GauntletSubmit", function()
+  local state = review("submit")
+  if state then
+    require("gauntlet.ui").submit(state)
+  end
 end, {
-  desc = "Send this review's comments to GitHub as one review",
+  desc = "Choose a verdict and send this review to GitHub",
+})
+
+vim.api.nvim_create_user_command("GauntletPush", function()
+  local state = review("push")
+  if state then
+    require("gauntlet").push(state)
+  end
+end, {
+  desc = "Send the comments written since the last send, with no verdict",
+})
+
+vim.api.nvim_create_user_command("GauntletApprove", function()
+  local state = review("approve")
+  if state then
+    require("gauntlet").approve(state)
+  end
+end, {
+  desc = "Approve this pull request, sending any unsent comments with it",
+})
+
+vim.api.nvim_create_user_command("GauntletReject", function()
+  local state = review("reject")
+  if state then
+    require("gauntlet").reject(state)
+  end
+end, {
+  desc = "Request changes on this pull request, sending any unsent comments with it",
 })
 
 vim.api.nvim_create_user_command("GauntletRefresh", function()
-  local state = require("gauntlet.ui").current()
-  if not state then
-    vim.notify("gauntlet: no review here to refresh", vim.log.levels.ERROR)
-    return
+  local state = review("refresh")
+  if state then
+    require("gauntlet").refresh(state)
   end
-  require("gauntlet").refresh(state)
 end, {
   desc = "Fetch this review's new commits and comment threads from GitHub",
 })

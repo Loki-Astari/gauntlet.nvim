@@ -168,4 +168,60 @@ function M.drafts(store)
   return drafts
 end
 
+--- The key a comment is recognised by when GitHub hands it back.
+---
+--- Not the line: an outdated thread reports the line it was pinned to rather
+--- than the one it was written against, and the two differ exactly when the
+--- pull request has changed the code since.  The file, the side and the text
+--- identify it well enough, and the text is the part nothing else shares.
+---@param path string
+---@param side string
+---@param body string
+---@return string
+local function key(path, side, body)
+  return table.concat({ path or "", side or "", body or "" }, "\0")
+end
+
+--- Drop the drafts GitHub has taken over.
+---
+--- A comment that has been sent exists twice: here, marked published, and in
+--- the threads fetched back from GitHub.  Drawn from both, it would appear
+--- twice against its line.  The fetched copy wins -- it is the one that can
+--- gain replies and be resolved -- but only once it has actually arrived, so
+--- a fetch that has not happened yet, or that failed, never costs the record
+--- of what was said.
+---@param store table  the drafts
+---@param fetched table|nil  a thread store, as gauntlet.threads returns one
+---@return integer dropped
+function M.forget_published(store, fetched)
+  local arrived = {}
+  for _, thread in ipairs((fetched or {}).threads or {}) do
+    for _, comment in ipairs(thread.comments or {}) do
+      arrived[key(thread.path, thread.side, comment.body)] = true
+    end
+  end
+
+  local kept, dropped = {}, 0
+  for _, thread in ipairs(store.threads or {}) do
+    local handed_over = #(thread.comments or {}) > 0
+    for _, comment in ipairs(thread.comments or {}) do
+      if comment.state ~= "published"
+        or not arrived[key(thread.path, thread.side, comment.body)]
+      then
+        handed_over = false
+        break
+      end
+    end
+
+    if handed_over then
+      dropped = dropped + 1
+    else
+      table.insert(kept, thread)
+    end
+  end
+
+  store.threads = kept
+  return dropped
+end
+
 return M

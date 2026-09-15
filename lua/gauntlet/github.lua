@@ -102,10 +102,46 @@ function M.get_open(repo, number)
   return pr
 end
 
+--- Make sense of a refusal from the API.
+---
+--- GitHub explains itself in the response body, which gh prints alongside its
+--- own one-line summary.  The body is the useful half -- "Can not approve your
+--- own pull request" says what to do about it, where "HTTP 422" does not.
+---@param out string  everything gh wrote
+---@return string
+local function api_error(out)
+  out = vim.trim(out or "")
+
+  local ok, decoded = pcall(vim.json.decode, out)
+  if ok and type(decoded) == "table" and decoded.message then
+    local parts = { decoded.message }
+    for _, item in ipairs(decoded.errors or {}) do
+      -- An entry is either a string or an object explaining one field.
+      local detail = type(item) == "table" and (item.message or item.field) or item
+      if type(detail) == "string" then
+        table.insert(parts, detail)
+      end
+    end
+    return table.concat(parts, "; ")
+  end
+
+  -- gh's own form, when the body was not JSON: "gh: Not Found (HTTP 404)".
+  for _, line in ipairs(vim.split(out, "\n", { plain = true })) do
+    local message = line:match("^gh: (.+)$")
+    if message then
+      return message
+    end
+  end
+
+  return out ~= "" and out or "gh exited with an error"
+end
+
 --- Post a review: a verdict, a covering note, and the line comments together.
 ---
 --- One request, because that is how GitHub models a review -- and it is what
---- lets the comments be written offline and sent in a single go.
+--- lets the comments be written offline and sent in a single go.  It is also
+--- all or nothing: a comment GitHub will not accept takes the verdict and the
+--- covering note down with it, which is why gauntlet.send checks first.
 ---@param repo table { owner, repo }
 ---@param number integer
 ---@param payload table { commit_id, body, event, comments }
@@ -127,7 +163,7 @@ function M.submit_review(repo, number, payload)
   }, vim.json.encode(payload))
 
   if vim.v.shell_error ~= 0 then
-    return nil, vim.trim(out) ~= "" and vim.trim(out) or "gh exited with an error"
+    return nil, api_error(out)
   end
 
   local ok, decoded = pcall(vim.json.decode, out)
