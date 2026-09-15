@@ -11,6 +11,7 @@ CONTENTS                                                    *gauntlet-contents*
   6. The review view ....... |gauntlet-review|
   7. Comments .............. |gauntlet-comments|
      Sending a review ..... |gauntlet-sending|
+     Your own pull request  |gauntlet-author|
   8. The review worktree ... |gauntlet-worktree|
   9. Errors ................ |gauntlet-errors|
  10. Configuration ......... |gauntlet-configuration|
@@ -154,9 +155,13 @@ An added file has an empty left-hand side, a deleted file an empty right-hand
 side.
 
                                                         *gauntlet-read-only*
-Everything is read-only.  The right-hand side is a real file in the review
-worktree, which is what lets a language server, |gd| and |K| work on it, but
-it is opened non-modifiable: reviewing must not be able to change a checkout.
+Reviewing someone else's pull request can alter nothing.  The right-hand side
+is a real file in the review worktree, which is what lets a language server,
+|gd| and |K| work on it, but it is opened non-modifiable: reviewing must not
+be able to change a checkout.
+
+Your own pull request is the exception -- see |gauntlet-author|.  The
+left-hand side is the base, and is never writable by anyone.
 
 The panes stay out of the buffer list, and are discarded as you move on, so a
 review leaves nothing behind in |:ls|, |CTRL-^| or a bufferline plugin -- a
@@ -328,6 +333,52 @@ Comments are stored as *threads*, each holding a list of comments, even though
 one you write has a single comment in it.  A thread fetched from GitHub is the
 same shape with more comments and an author who is not you, so pulling threads
 in later will add to this rather than change it.
+
+                                                            *gauntlet-author*
+ANSWERING A REVIEW OF YOUR OWN
+
+Sometimes the quickest answer to a comment is the change it asks for.  When
+the account `gh` is authenticated as is the pull request's author, the
+right-hand pane is opened writable and `:w` writes the file in the review
+worktree -- the same file a language server is already reading, so everything
+that works for reading works for changing.
+
+    :GauntletCommit     Commit what the worktree has changed.
+    :GauntletPublish    Push it onto the pull request's branch.
+
+|:GauntletCommit| opens a buffer for the message, listing what is about to go
+in; `:w` commits, `:q` calls it off.  It stages everything, and refuses while
+any pane still holds unwritten changes, since those would silently be left
+out.  |:GauntletPublish| pushes to the branch by name -- the worktree is
+detached, so there is nothing for a bare push to push to -- and then brings
+the review's own record up to the commit it just sent, so a refresh
+afterwards sees no movement.
+
+Whose pull request it is, is worked out once and kept in `meta.json`, so
+reconnecting to a review with no network still knows.  A review that never
+recorded it stays read-only, which is the safe way to be wrong.
+
+                                                      *gauntlet-unpublished*
+The file list follows the worktree rather than the commit while a review is
+yours, so an edit shows in the counts as soon as it is written -- including a
+file you have just created, which `git diff` cannot see until it is staged.
+Work that is not on GitHub is marked `✎`, against the file and in the header:
+
+    ✎ 1 uncommitted
+    ✎ 2 commits to publish
+
+Two things follow from that.  A comment cannot be left on a file with
+unpublished changes: its line numbers are not GitHub's, so the comment would
+land somewhere else entirely.  And |:GauntletRefresh| will not reset a
+worktree that holds work -- neither uncommitted changes nor commits that have
+not been pushed -- it stops and says which.
+
+Nothing gauntlet does tidily will discard an unwritten buffer, either:
+switching files and redrawing both leave a modified pane exactly where it is.
+
+A pull request from a fork has its branch in another repository, and the one
+the review was fetched from is not it.  Publishing looks for that repository
+among your remotes and, not finding it, says so rather than guessing.
 
 ==============================================================================
 8. THE REVIEW WORKTREE                                      *gauntlet-worktree*

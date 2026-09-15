@@ -189,7 +189,12 @@ function discard_panes(state)
     return
   end
   for _, pane in ipairs({ state.diff.left, state.diff.right }) do
-    if vim.api.nvim_buf_is_valid(pane.buf) and not shown_outside(state, pane.buf) then
+    if vim.api.nvim_buf_is_valid(pane.buf)
+      -- An author's pane is a real file they may have been editing.  Tidying
+      -- up must never be what loses it; an unwritten buffer stays.
+      and not vim.bo[pane.buf].modified
+      and not shown_outside(state, pane.buf)
+    then
       pcall(vim.api.nvim_buf_delete, pane.buf, { force = true })
     end
   end
@@ -228,8 +233,12 @@ local function show_diff(state, file)
     vim.bo[head_buf].swapfile = false
     vim.bo[head_buf].buflisted = false
     vim.fn.bufload(head_buf)
-    vim.bo[head_buf].modifiable = false
-    vim.bo[head_buf].readonly = true
+    -- Yours to change, or nobody's.  The pane is the real file in the
+    -- worktree, so writing it writes the checkout -- which is the point when
+    -- the pull request is your own, and must not be possible when it is not.
+    local yours = require("gauntlet.author").editable(state.review)
+    vim.bo[head_buf].modifiable = yours
+    vim.bo[head_buf].readonly = not yours
   else
     -- A deleted file has no right-hand side.
     head_buf = scratch({}, ("gauntlet://pr-%d/deleted/%s"):format(state.pr.number, file.path), filetype, true)
@@ -298,6 +307,9 @@ function M.highlights()
     -- The directory is context; the filename is what is being looked at.
     GauntletPathDir = "Comment",
     GauntletPathFile = "Normal",
+    -- Work that exists only here.  A warning colour, because it is the state
+    -- in which the review and GitHub disagree.
+    GauntletLocal = "WarningMsg",
   }
   for group, target in pairs(links) do
     vim.api.nvim_set_hl(0, group, { link = target, default = true })
@@ -576,6 +588,18 @@ function add_comment(state)
     return
   end
 
+  -- A file you have edited but not published is not the file GitHub holds, so
+  -- its line numbers are not GitHub's either and a comment would land
+  -- somewhere else entirely.
+  if (state.unpublished or {})[anchor.path] then
+    vim.notify(
+      ("gauntlet: %s has changes that are not on GitHub, so a comment could not be placed in it")
+        :format(anchor.path),
+      vim.log.levels.WARN
+    )
+    return
+  end
+
   -- GitHub will not take a comment on a line that is not part of the diff, so
   -- say so now rather than at submission, when it would be a puzzle.
   if not changes.commentable(state.diff.hunks, anchor.side, anchor.line) then
@@ -661,31 +685,52 @@ local function fit_path(path, room)
   return "…" .. vim.fn.strcharpart(short, vim.fn.strchars(short) - room + 1)
 end
 
+--- The marks a file carries, in the order they are drawn.
+--- Local work first: it is the one that says this line is not what GitHub
+--- has, which changes what everything else on the row means.
+---@param path string
+---@param counts table { unpublished, open, settled }
+---@return table[] parts  { text, highlight }
+local function marks_for(path, counts)
+  local parts = {}
+  if counts.unpublished[path] then
+    table.insert(parts, { "✎", "GauntletLocal" })
+  end
+  if counts.open[path] then
+    table.insert(parts, { ("●%d"):format(counts.open[path]), "GauntletThread" })
+  end
+  if counts.settled[path] then
+    table.insert(parts, { ("✓%d"):format(counts.settled[path]), "GauntletSettled" })
+  end
+  return parts
+end
+
+--- How wide a row of marks is, separators included.
+---@param parts table[]
+---@return integer
+local function marks_width(parts)
+  local used = 0
+  for index, part in ipairs(parts) do
+    used = used + vim.fn.strdisplaywidth(part[1]) + (index > 1 and 1 or 0)
+  end
+  return used
+end
+
 --- What each column of the file list has to be wide enough to hold.
 ---
 --- Measured once over the whole list rather than per row, which is what makes
 --- the columns line up: a row that worked out its own widths would put its
 --- counts wherever its own path happened to end.
 ---@param state table
----@param open_count table<string, integer>
----@param settled table<string, integer>
+---@param counts table { unpublished, open, settled }
 ---@return table widths { path, marker, adds, dels }
-local function columns(state, open_count, settled)
+local function columns(state, counts)
   local widths = { marker = 0, adds = 0, dels = 0 }
 
   for _, file in ipairs(state.files) do
     widths.adds = math.max(widths.adds, vim.fn.strdisplaywidth(("+%d"):format(file.additions)))
     widths.dels = math.max(widths.dels, vim.fn.strdisplaywidth(("−%d"):format(file.deletions)))
-
-    local marker = 0
-    if open_count[file.path] then
-      marker = vim.fn.strdisplaywidth(("●%d"):format(open_count[file.path]))
-    end
-    if settled[file.path] then
-      marker = marker + (marker > 0 and 1 or 0)
-        + vim.fn.strdisplaywidth(("✓%d"):format(settled[file.path]))
-    end
-    widths.marker = math.max(widths.marker, marker)
+    widths.marker = math.max(widths.marker, marks_width(marks_for(file.path, counts)))
   end
 
   -- The marker column costs nothing at all when no file carries a thread.
@@ -734,6 +779,24 @@ function M.render_sidebar(state)
 
   add(M.title(state.pr), nil, "Title")
   add(("%s/%s"):format(state.repo.owner, state.repo.repo), nil, "Comment")
+
+  -- Yours, and not all of it sent: the one thing worth interrupting the
+  -- header for, since everything below it is about to disagree with GitHub.
+  local author = require("gauntlet.author")
+  if author.editable(state.review) then
+    local changed, unpushed = #author.dirty(state.review), author.unpushed(state.review)
+    if changed > 0 or unpushed > 0 then
+      local said = {}
+      if changed > 0 then
+        table.insert(said, ("%d uncommitted"):format(changed))
+      end
+      if unpushed > 0 then
+        table.insert(said, ("%d commit%s to publish"):format(unpushed, unpushed == 1 and "" or "s"))
+      end
+      add("✎ " .. table.concat(said, ", "), nil, "GauntletLocal")
+    end
+  end
+
   add("")
   add("  Conversation", { kind = "conversation" })
   add("")
@@ -748,7 +811,13 @@ function M.render_sidebar(state)
     settled[thread.path] = (settled[thread.path] or 0) + 1
   end
 
-  local widths = columns(state, open_count, settled)
+  -- Recomputed here rather than remembered, because the worktree is now
+  -- something the author edits by hand as well: anything cached would be
+  -- wrong the moment they wrote a file outside gauntlet.
+  state.unpublished = changes.unpublished(state.review)
+  local counts = { unpublished = state.unpublished, open = open_count, settled = settled }
+
+  local widths = columns(state, counts)
   local status_hl = {
     A = "GauntletStatusAdded",
     M = "GauntletStatusModified",
@@ -767,20 +836,8 @@ function M.render_sidebar(state)
     table.insert(chunks, { string.rep(" ", widths.path - vim.fn.strdisplaywidth(shown)) })
 
     if widths.marker > 0 then
-      local parts = {}
-      if open_count[file.path] then
-        table.insert(parts, { ("●%d"):format(open_count[file.path]), "GauntletThread" })
-      end
-      if settled[file.path] then
-        table.insert(parts, { ("✓%d"):format(settled[file.path]), "GauntletSettled" })
-      end
-
-      local used = 0
-      for index, part in ipairs(parts) do
-        used = used + vim.fn.strdisplaywidth(part[1]) + (index > 1 and 1 or 0)
-      end
-
-      table.insert(chunks, { " " .. string.rep(" ", widths.marker - used) })
+      local parts = marks_for(file.path, counts)
+      table.insert(chunks, { " " .. string.rep(" ", widths.marker - marks_width(parts)) })
       for index, part in ipairs(parts) do
         if index > 1 then
           table.insert(chunks, { " " })
@@ -861,11 +918,25 @@ function M.reload(state)
   -- holding the old contents, so drop those buffers rather than trusting
   -- :edit to notice the file changed under it.
   local inside = vim.fs.normalize(state.review.worktree) .. "/"
+  local kept = {}
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     local name = vim.api.nvim_buf_get_name(buf)
     if name ~= "" and vim.startswith(vim.fs.normalize(name), inside) then
-      pcall(vim.api.nvim_buf_delete, buf, { force = true })
+      if vim.bo[buf].modified then
+        -- Written work is never dropped to make a redraw tidy.  It is now out
+        -- of step with the file underneath it, which is worth saying.
+        table.insert(kept, vim.fs.basename(name))
+      else
+        pcall(vim.api.nvim_buf_delete, buf, { force = true })
+      end
     end
+  end
+  if #kept > 0 then
+    vim.notify(
+      ("gauntlet: kept unwritten changes in %s, which the worktree has moved under")
+        :format(table.concat(kept, ", ")),
+      vim.log.levels.WARN
+    )
   end
 
   local showing = state.diff and state.diff.file.path
@@ -1109,6 +1180,88 @@ function M.compose(state, event)
   })
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "" })
+  vim.cmd("startinsert")
+end
+
+--- Write a commit message for the worktree, then commit.  `:w` commits;
+--- `:q` calls it off.
+---
+--- The same shape as the covering note, deliberately: there is one way in
+--- this interface to write something and send it, and this is it.
+---@param state table
+function M.compose_commit(state)
+  local author = require("gauntlet.author")
+
+  if not author.editable(state.review) then
+    vim.notify("gauntlet: #" .. state.pr.number .. " is not yours to change", vim.log.levels.WARN)
+    return
+  end
+
+  local changed = author.dirty(state.review)
+  if #changed == 0 then
+    vim.notify("gauntlet: nothing to commit", vim.log.levels.WARN)
+    return
+  end
+
+  -- Anything written but not saved would not be in the commit, and finding
+  -- that out afterwards is the worst time to find it out.
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local name = vim.api.nvim_buf_get_name(buf)
+    if name ~= "" and vim.bo[buf].modified
+      and vim.startswith(vim.fs.normalize(name), vim.fs.normalize(state.review.worktree) .. "/")
+    then
+      vim.notify(
+        ("gauntlet: %s has unwritten changes; :w it first"):format(vim.fs.basename(name)),
+        vim.log.levels.WARN
+      )
+      return
+    end
+  end
+
+  vim.cmd("botright split")
+  local win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_height(win, 10)
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(win, buf)
+  vim.bo[buf].buftype = "acwrite"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].filetype = "gitcommit"
+  vim.wo[win].wrap = true
+  vim.wo[win].linebreak = true
+  vim.wo[win].number = false
+  claim_name(buf, ("gauntlet://pr-%d/commit"):format(state.pr.number))
+
+  vim.api.nvim_create_autocmd("BufWriteCmd", {
+    buffer = buf,
+    desc = "Gauntlet: commit the review worktree",
+    callback = function()
+      local message = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+
+      local commit, err = author.commit(state.review, message)
+      if not commit then
+        vim.notify("gauntlet: could not commit: " .. err, vim.log.levels.ERROR)
+        return
+      end
+
+      vim.bo[buf].modified = false
+      pcall(vim.api.nvim_win_close, win, true)
+      M.reload(state)
+      vim.notify(
+        ("gauntlet: committed %s %s"):format((commit.sha or ""):sub(1, 7), commit.subject),
+        vim.log.levels.INFO
+      )
+    end,
+  })
+
+  -- What is about to go in, as a reminder rather than as part of the message.
+  local hint = { "" }
+  for _, change in ipairs(changed) do
+    table.insert(hint, ("# %s %s"):format(change.status, change.path))
+  end
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, hint)
+  vim.api.nvim_win_set_cursor(win, { 1, 0 })
   vim.cmd("startinsert")
 end
 

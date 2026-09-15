@@ -20,6 +20,12 @@ local PR_FIELDS = table.concat({
   "additions",
   "deletions",
   "changedFiles",
+  -- Who may push to the branch, and where it lives.  A pull request from a
+  -- fork has its head somewhere other than the repository being reviewed.
+  "isCrossRepository",
+  "headRepository",
+  "headRepositoryOwner",
+  "maintainerCanModify",
 }, ",")
 
 local LIST_FIELDS = "number,title,author,isDraft,headRefName,updatedAt"
@@ -51,6 +57,27 @@ end
 ---@param repo table { owner, repo }
 local function slug(repo)
   return repo.owner .. "/" .. repo.repo
+end
+
+-- Who gh is authenticated as.  Asked once: it cannot change under a running
+-- Neovim without gh being reconfigured, and every review would otherwise pay
+-- for it again.
+local login
+
+--- The GitHub account gh is acting as.
+--- Needed to tell whether a pull request is yours, which is what decides
+--- whether its files may be edited.
+---@return string|nil login, string|nil err
+function M.me()
+  if login then
+    return login
+  end
+  local user, err = gh_json({ "api", "user" })
+  if not user or not user.login then
+    return nil, err or "gh did not say who you are"
+  end
+  login = user.login
+  return login
 end
 
 --- Open pull requests for a repository.

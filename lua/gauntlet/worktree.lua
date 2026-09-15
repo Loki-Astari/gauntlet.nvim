@@ -95,6 +95,59 @@ local function write_json(path, value)
   pcall(vim.fn.writefile, vim.split(vim.json.encode(value), "\n", { plain = true }), path)
 end
 
+--- Note that a review is now at `head`, without going to GitHub for it.
+---
+--- What gauntlet.author calls after publishing: the commit it just pushed is
+--- what the branch holds, so the ref and meta.json have to agree, or the next
+--- refresh would see the branch as having run ahead of the review.
+---@param repo table { owner, repo }
+---@param review table  updated in place
+---@param head string
+---@return boolean ok
+function M.record(repo, review, head)
+  local root = git.root()
+  if not root then
+    return false
+  end
+
+  git.run(root, { "update-ref", pr_ref(review.number), head })
+  review.head = head
+
+  local meta_path = vim.fs.joinpath(M.dir(repo, review.number), "meta.json")
+  local meta = read_json(meta_path) or {}
+  meta.head = head
+  meta.fetched_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
+  write_json(meta_path, meta)
+  return true
+end
+
+--- Is the working tree of a review clean, and is it on the commit it thinks?
+---
+--- An author may edit their own review, so a worktree is no longer something
+--- only gauntlet writes to.  Nothing may reset over work that is not on
+--- GitHub yet.
+---@param root string  repository root
+---@param worktree string
+---@param ref string  the ref just fetched
+---@return boolean ok, string|nil err
+local function safe_to_move(root, worktree, ref)
+  local changed = git.run(worktree, { "status", "--porcelain" })
+  if changed and #changed > 0 then
+    return false, ("the review worktree has %d uncommitted change%s; commit or discard them first")
+      :format(#changed, #changed == 1 and "" or "s")
+  end
+
+  -- Commits made here and not yet pushed would be lost to a reset.  They are
+  -- exactly the commits reachable from HEAD but not from what was fetched.
+  local ahead = git.run(worktree, { "rev-list", "--count", ("%s..HEAD"):format(ref) })
+  local count = tonumber((ahead or {})[1] or "0") or 0
+  if count > 0 then
+    return false, ("the review worktree has %d commit%s that %s not on GitHub; :GauntletPublish first")
+      :format(count, count == 1 and "" or "s", count == 1 and "is" or "are")
+  end
+  return true
+end
+
 --- Fetch the pull request's head and put the review onto it.
 ---
 --- Shared by open(), which does this the first time, and update(), which does
@@ -151,9 +204,12 @@ local function sync(root, repo, pr)
 
   if registered(root, worktree) and vim.fn.isdirectory(worktree) == 1 then
     -- Already checked out from an earlier session: move it onto the new head.
-    -- A hard reset rather than a checkout because the worktree is only ever
-    -- read -- there is nothing in it worth preserving, and a reset copes with
-    -- one left in any state at all.
+    -- A hard reset, which copes with a worktree left in any state -- but only
+    -- once it is certain there is no work in it to lose.
+    local safe, serr = safe_to_move(root, worktree, ref)
+    if not safe then
+      return nil, serr
+    end
     local _, rerr = git.run(worktree, { "reset", "--hard", "--quiet", ref })
     if rerr then
       return nil, ("could not move the review worktree onto %s: %s"):format(head:sub(1, 7), rerr)
@@ -188,11 +244,20 @@ local function sync(root, repo, pr)
   -- run instead, producing no reads at all.
   git.run(root, { "diff", "--no-ext-diff", "--numstat", base, ref })
 
+  -- Who wrote the pull request, and who we are, recorded now while there is
+  -- a network: reconnecting to this review offline has to be able to tell
+  -- whether its files are yours to edit.
+  local author = (pr.author or {}).login
+  local me = require("gauntlet.github").me()
+
   write_json(meta_path, {
     base = base,
     head = head,
     number = pr.number,
     repo = repo.owner .. "/" .. repo.repo,
+    author = author,
+    me = me,
+    branch = pr.headRefName,
     fetched_at = os.date("!%Y-%m-%dT%H:%M:%SZ"),
   })
 
@@ -202,6 +267,10 @@ local function sync(root, repo, pr)
     base = base,
     head = head,
     number = pr.number,
+    author = author,
+    me = me,
+    branch = pr.headRefName,
+    mine = author ~= nil and me ~= nil and author == me,
   }
 end
 
@@ -232,6 +301,10 @@ function M.open(repo, pr)
         base = meta.base,
         head = meta.head,
         number = pr.number,
+        author = meta.author,
+        me = meta.me,
+        branch = meta.branch or pr.headRefName,
+        mine = meta.author ~= nil and meta.me ~= nil and meta.author == meta.me,
       }
     end
     -- The worktree is there but we cannot say what it holds; start again.

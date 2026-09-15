@@ -50,7 +50,7 @@ Settled by design before implementation. One tab page per review, named
 ```
 [ PR Review 1 ]
 +- Files ---------+- lua/gauntlet/ui.lua ---------------+
-| > Conversation  |  base (read-only) |  head (read-only)|
+| > Conversation  |  base (read-only) |  head (yours: r/w)|
 |                 |                   |                  |
 | M .gitignore +3 |  local M = {}     |  local M = {}    |
 | A CLAUDE.md +54 |                   | +function M.pick |
@@ -63,8 +63,13 @@ Settled by design before implementation. One tab page per review, named
   first entry, so the description is one keystroke from any file.
 - Selecting a file shows a **two-pane vimdiff**: merge-base version on the
   left, PR version on the right.
-- **Everything is read-only.** Nothing the reviewer types can alter a file.
-  This does not cost LSP or `gd`, which work on non-modifiable buffers.
+- **Read-only unless it is yours.** Reviewing someone else's pull request can
+  alter nothing. Your own is different: the right-hand pane is the real file
+  in the worktree, and when `gh`'s account matches the pull request's author
+  it is opened writable, so an answer to a review comment can be made where
+  the comment is. `:GauntletCommit` and `:GauntletPublish` put it on the
+  branch. Everything else -- the base pane, anyone else's review -- stays
+  shut, which costs nothing for LSP or `gd`.
 
 Later, and deliberately not yet: review comments, and submitting a review.
 The sidebar leaves room for a per-file "viewed" marker and comment counts.

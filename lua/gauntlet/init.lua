@@ -104,7 +104,7 @@ function M.prepare(repo, pr)
   end
 
   local files
-  files, err = changes.list(root, review.base, review.head)
+  files, err = changes.for_review(root, review)
   if not files then
     return nil, err
   end
@@ -247,7 +247,7 @@ function M.refresh(state)
   end
 
   local files
-  files, err = changes.list(state.root, review.base, review.head)
+  files, err = changes.for_review(state.root, review)
   if not files then
     vim.notify("gauntlet: " .. err, vim.log.levels.ERROR)
     return false
@@ -323,6 +323,49 @@ end
 ---@param state table
 function M.reject(state)
   require("gauntlet.ui").compose(state, "REQUEST_CHANGES")
+end
+
+--- Commit what you have changed in a review of your own.
+---@param state table
+function M.commit(state)
+  require("gauntlet.ui").compose_commit(state)
+end
+
+--- Push what the worktree holds onto the pull request's branch.
+---
+--- The counterpart to editing: until this runs, the changes exist only here,
+--- and the review says so.  Afterwards the pull request is what you have been
+--- looking at, and the threads are worth fetching again -- a push is what
+--- makes other people's comments outdated.
+---@param state table
+---@return boolean ok
+function M.publish(state)
+  local author = require("gauntlet.author")
+  local ui = require("gauntlet.ui")
+
+  if not author.editable(state.review) then
+    vim.notify(("gauntlet: #%d is not yours to change"):format(state.pr.number), vim.log.levels.WARN)
+    return false
+  end
+
+  local published, err = author.publish(state.repo, state.pr, state.review)
+  if not published then
+    vim.notify("gauntlet: could not publish: " .. err, vim.log.levels.WARN)
+    return false
+  end
+
+  local _, terr = M.settle(state)
+  if terr then
+    vim.notify("gauntlet: published, but could not fetch the threads back: " .. terr, vim.log.levels.WARN)
+  end
+  ui.reload(state)
+
+  vim.notify(
+    ("gauntlet: published %s to %s/%s"):format(
+      published.head:sub(1, 7), published.remote, published.branch),
+    vim.log.levels.INFO
+  )
+  return true
 end
 
 --- Remove a review from disk: its worktree, its ref, and its drafts.

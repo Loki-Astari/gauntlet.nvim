@@ -81,6 +81,24 @@ end, {
   desc = "Fetch this review's new commits and comment threads from GitHub",
 })
 
+vim.api.nvim_create_user_command("GauntletCommit", function()
+  local state = review("commit in")
+  if state then
+    require("gauntlet").commit(state)
+  end
+end, {
+  desc = "Commit what you have changed in a pull request of your own",
+})
+
+vim.api.nvim_create_user_command("GauntletPublish", function()
+  local state = review("publish")
+  if state then
+    require("gauntlet").publish(state)
+  end
+end, {
+  desc = "Push what the review worktree holds onto the pull request's branch",
+})
+
 vim.api.nvim_create_user_command("GauntletDiscard", function(opts)
   require("gauntlet").discard(opts.args)
 end, {
