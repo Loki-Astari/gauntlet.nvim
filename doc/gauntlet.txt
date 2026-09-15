@@ -127,6 +127,20 @@ either the pull request's description or a two-pane diff.
 The file list is flat and sorted, each line carrying the status letter git
 gives it -- A, M, D, R -- and the lines added and removed.  `Conversation` is
 the first entry, so the description is one keystroke away from any file.
+>
+    M lua/gauntlet/ui.lua      ●2  +58 −45
+    A tests/send_spec.lua         +193  −0
+<
+                                                        *gauntlet-file-list*
+Its columns are measured once over the whole list and the numbers are right
+aligned, so they end together and can be compared down the column.  The
+counts sit against the right edge; the marker column appears only when some
+file carries a thread, and takes its room from the path.
+
+A path too long for the room left has its directories shortened to their
+first letter -- `l/g/ui.lua` -- which keeps every part of the tree in view
+where cutting the front off would not.  Only if that still will not fit is
+the end kept, the filename being the part worth reading.
 
     <CR>                Open the entry under the cursor.
     q                   Close the review.
@@ -164,13 +178,30 @@ the comment is drawn underneath it as a bordered note, wrapped to fit.  The
 file list counts them, so `●2` beside a file means two.
 
                                                         *gauntlet-highlights*
-The note's colours are these groups, each defined only as a default, so
-anything a colourscheme or your config sets wins:
+Colours are these groups, each defined only as a default, so anything a
+colourscheme or your config sets wins.  The note:
 
     GauntletComment          the comment text     (NormalFloat)
     GauntletCommentBorder    the box around it    (FloatBorder)
     GauntletCommentAuthor    who wrote it         (Title)
     GauntletCommentSign      the marker and line  (DiagnosticSignInfo)
+
+And the file list:
+
+    GauntletStatusAdded      the A of an added file      (Added)
+    GauntletStatusModified   the M of a modified one     (Changed)
+    GauntletStatusDeleted    the D of a deleted one      (Removed)
+    GauntletStatusRenamed    the R or C of a moved one   (Changed)
+    GauntletAdded            the lines added, +58        (Added)
+    GauntletRemoved          the lines removed, −45      (Removed)
+    GauntletThread           threads still open, ●2      (DiagnosticSignInfo)
+    GauntletSettled          threads dealt with, ✓1      (Comment)
+    GauntletPathDir          the directory of a path     (Comment)
+    GauntletPathFile         the filename                (Normal)
+
+`Added`, `Changed` and `Removed` are Neovim's own groups for this, and colour
+the text.  `DiffAdd` and its siblings colour the *background*, which would put
+the status letter in a block rather than tinting it.
 
 They link to the floating-window groups because that is the effect wanted: a
 note laid over the code rather than another part of it.

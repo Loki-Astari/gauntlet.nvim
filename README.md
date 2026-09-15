@@ -86,6 +86,28 @@ The file list counts them (`●2`). Colours come from `GauntletComment`,
 `GauntletCommentBorder`, `GauntletCommentAuthor` and `GauntletCommentSign`,
 all defined as defaults so your colourscheme wins.
 
+### The file list
+
+```
+M lua/gauntlet/ui.lua      ●2  +58 −45
+A tests/send_spec.lua         +193  −0
+```
+
+Column widths are measured once over the whole list and the numbers are right
+aligned, so they end together and read down the column. The counts sit against
+the right edge; the marker column shows up only when a file carries a thread,
+and takes its room from the path.
+
+A path too long for the room left has its directories shortened to their first
+letter — `l/g/ui.lua` — which keeps the whole tree in view where cutting the
+front off would not. Only if that still won't fit is the end kept.
+
+Each part is coloured on its own, again all defaults: `GauntletStatusAdded` /
+`Modified` / `Deleted` / `Renamed` for the status letter, `GauntletAdded` and
+`GauntletRemoved` for the counts, `GauntletThread` and `GauntletSettled` for
+the markers, and `GauntletPathDir` / `GauntletPathFile` so the directory
+recedes and the filename stands out.
+
 Comments anchor to a line *and* a side (left is the base, right is the PR).
 GitHub only accepts comments on lines that are part of the diff, so `c`
 refuses a line that isn't rather than letting it fail at submission.

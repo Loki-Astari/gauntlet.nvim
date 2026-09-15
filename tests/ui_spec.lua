@@ -74,7 +74,7 @@ describe("gauntlet.ui", function()
     fixture = helpers.repo()
     review_dir = vim.fn.tempname()
     while #vim.api.nvim_list_tabpages() > 1 do
-      vim.cmd("tabclose")
+      vim.cmd("tabclose!")
     end
     vim.cmd("enew!")
     state = open()
@@ -82,7 +82,7 @@ describe("gauntlet.ui", function()
 
   after_each(function()
     while #vim.api.nvim_list_tabpages() > 1 do
-      vim.cmd("tabclose")
+      vim.cmd("tabclose!")
     end
     vim.cmd("enew!")
     vim.fn.delete(review_dir, "rf")
@@ -121,6 +121,196 @@ describe("gauntlet.ui", function()
       local width = vim.api.nvim_win_get_width(state.sidebar_win)
       select_entry("change.txt")
       assert.equals(width, vim.api.nvim_win_get_width(state.sidebar_win))
+    end)
+  end)
+
+  describe("the file list columns", function()
+    -- A row used to work out its own path width from its own counts, so no
+    -- two rows agreed where the numbers went.  Widths are now measured once
+    -- over the whole list.
+    local WIDTH = 40
+
+    local function file_lines()
+      local out = {}
+      for _, line in ipairs(sidebar_lines()) do
+        if line:match("^  %a ") then
+          table.insert(out, line)
+        end
+      end
+      return out
+    end
+
+    local function entry(path, adds, dels)
+      return { path = path, status = "M", additions = adds or 1, deletions = dels or 0, binary = false }
+    end
+
+    --- Where `needle` starts, in display cells rather than bytes.
+    local function column_of(line, needle)
+      local at = assert(line:find(needle, 1, true), needle .. " not in " .. line)
+      return vim.fn.strdisplaywidth(line:sub(1, at - 1))
+    end
+
+    local function thread_on(path)
+      return {
+        path = path, side = "RIGHT", line = 2, resolved = false, outdated = false,
+        subject = "line", comments = { { author = "loki", body = "why not local?" } },
+      }
+    end
+
+    it("makes every row the full width of the sidebar", function()
+      for _, line in ipairs(file_lines()) do
+        assert.equals(WIDTH, vim.fn.strdisplaywidth(line))
+      end
+    end)
+
+    it("ends the additions in the same column on every row", function()
+      -- Right-aligned, so the digits end together however many there are --
+      -- which is what makes +193 and +58 comparable at a glance.
+      state.files = { entry("a.txt", 1, 1), entry("b.txt", 193, 45), entry("c.txt", 58, 0) }
+      ui.render_sidebar(state)
+
+      local at
+      for _, line in ipairs(file_lines()) do
+        local upto = assert(line:match("^(.-%+%d+)"))
+        local ends = vim.fn.strdisplaywidth(upto)
+        at = at or ends
+        assert.equals(at, ends)
+        assert.equals(WIDTH, vim.fn.strdisplaywidth(line))
+      end
+    end)
+
+    it("ends every row flush with the right edge", function()
+      -- The deletions are the last column, so they are what proves it.  The
+      -- old code measured the minus sign in bytes and the marker in cells,
+      -- and came up three short.
+      state.files = { entry("a.txt", 1, 1), entry("b.txt", 193, 45) }
+      ui.render_sidebar(state)
+
+      for _, line in ipairs(file_lines()) do
+        assert.is_truthy(line:match("−%d+$"))
+        assert.equals(WIDTH, vim.fn.strdisplaywidth(line))
+      end
+    end)
+
+    it("lines the thread markers up with each other", function()
+      state.threads = { threads = { thread_on("change.txt"), thread_on("new.txt") } }
+      ui.render_sidebar(state)
+
+      local seen = {}
+      for _, line in ipairs(file_lines()) do
+        if line:find("●", 1, true) then
+          table.insert(seen, column_of(line, "●"))
+        end
+      end
+      assert.equals(2, #seen)
+      assert.equals(seen[1], seen[2])
+    end)
+
+    it("takes the marker column out of the path, not the counts", function()
+      -- A path that fits while nothing is commented, and has to give way
+      -- once something is.  The counts stay where they are, against the
+      -- right edge.
+      state.files = { entry("lua/gauntlet/exactlyfits.lua", 1, 1) }
+      ui.render_sidebar(state)
+
+      local before = file_lines()[1]
+      assert.is_nil(before:find("●", 1, true))
+      assert.is_truthy(before:find("lua/gauntlet/exactlyfits.lua", 1, true))
+
+      state.threads = { threads = { thread_on("lua/gauntlet/exactlyfits.lua") } }
+      ui.render_sidebar(state)
+
+      local after = file_lines()[1]
+      assert.is_truthy(after:find("●1", 1, true))
+      assert.is_truthy(after:find("l/g/exactlyfits.lua", 1, true))
+      assert.equals(before:match("−%d+$"), after:match("−%d+$"))
+      assert.equals(WIDTH, vim.fn.strdisplaywidth(after))
+    end)
+
+    describe("fitting a path in", function()
+      it("shortens the directories before it cuts anything", function()
+        state.files = { entry("lua/gauntlet/deeply/nested/render.lua") }
+        ui.render_sidebar(state)
+        assert.is_truthy(file_lines()[1]:find("l/g/d/n/render.lua", 1, true))
+      end)
+
+      it("leaves a path that already fits alone", function()
+        state.files = { entry("lua/gauntlet/ui.lua") }
+        ui.render_sidebar(state)
+        assert.is_truthy(file_lines()[1]:find("lua/gauntlet/ui.lua", 1, true))
+      end)
+
+      it("keeps two characters of a dotted directory", function()
+        state.files = { entry(".github/workflows/deeply/nested/ci.yml") }
+        ui.render_sidebar(state)
+        assert.is_truthy(file_lines()[1]:find(".g/w/d/n/ci.yml", 1, true))
+      end)
+
+      it("keeps the end when even the short form will not fit", function()
+        state.files = { entry("src/" .. string.rep("x", 60) .. ".lua") }
+        ui.render_sidebar(state)
+
+        local line = file_lines()[1]
+        assert.is_truthy(line:find("…", 1, true))
+        assert.is_truthy(line:find("xxx.lua", 1, true))
+        assert.equals(WIDTH, vim.fn.strdisplaywidth(line))
+      end)
+    end)
+
+    describe("colour", function()
+      --- What each highlight on a row actually covers.
+      local function covered(line_number)
+        local ns = vim.api.nvim_create_namespace("GauntletSidebar")
+        local text = sidebar_lines()[line_number]
+        local out = {}
+        for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+          state.sidebar_buf, ns, { line_number - 1, 0 }, { line_number - 1, -1 }, { details = true })) do
+          out[mark[4].hl_group] = text:sub(mark[3] + 1, mark[4].end_col)
+        end
+        return out
+      end
+
+      it("colours each part of a row on its own", function()
+        state.files = { entry("lua/gauntlet/ui.lua", 58, 45) }
+        state.threads = { threads = { thread_on("lua/gauntlet/ui.lua") } }
+        ui.render_sidebar(state)
+
+        local hl = covered(line_of("ui.lua"))
+        assert.equals("M", hl.GauntletStatusModified)
+        assert.equals("lua/gauntlet/", hl.GauntletPathDir)
+        assert.equals("ui.lua", hl.GauntletPathFile)
+        assert.equals("●1", hl.GauntletThread)
+        assert.equals("+58", hl.GauntletAdded)
+        assert.equals("−45", hl.GauntletRemoved)
+      end)
+
+      it("tells an added file from a deleted one", function()
+        assert.equals("A", covered(line_of("new.txt")).GauntletStatusAdded)
+        assert.equals("D", covered(line_of("gone.txt")).GauntletStatusDeleted)
+      end)
+
+      it("draws a settled thread apart from an open one", function()
+        state.threads = { threads = {
+          thread_on("change.txt"),
+          vim.tbl_extend("force", thread_on("new.txt"), { resolved = true }),
+        } }
+        state.show_settled = true
+        ui.render_sidebar(state)
+
+        assert.equals("●1", covered(line_of("change.txt")).GauntletThread)
+        assert.equals("✓1", covered(line_of("new.txt")).GauntletSettled)
+      end)
+
+      it("defines every group as a default, so a colourscheme wins", function()
+        ui.highlights()
+        for _, group in ipairs({
+          "GauntletStatusAdded", "GauntletStatusModified", "GauntletStatusDeleted",
+          "GauntletStatusRenamed", "GauntletAdded", "GauntletRemoved",
+          "GauntletThread", "GauntletSettled", "GauntletPathDir", "GauntletPathFile",
+        }) do
+          assert.is_truthy(vim.api.nvim_get_hl(0, { name = group }).link, group .. " should link")
+        end
+      end)
     end)
   end)
 
@@ -487,7 +677,7 @@ describe("gauntlet.ui", function()
       write_comment("needs a test")
 
       while #vim.api.nvim_list_tabpages() > 1 do
-        vim.cmd("tabclose")
+        vim.cmd("tabclose!")
       end
       vim.cmd("enew!")
       state = open()
@@ -534,7 +724,7 @@ describe("gauntlet.ui", function()
 
     local function reopen(store)
       while #vim.api.nvim_list_tabpages() > 1 do
-        vim.cmd("tabclose")
+        vim.cmd("tabclose!")
       end
       vim.cmd("enew!")
       state = open(store)
@@ -666,6 +856,11 @@ describe("gauntlet.ui", function()
     local posted, handed_back, real
 
     local function composer_win()
+      -- plenary runs after_each for every test in the file, not just this
+      -- block's, so by the time it calls this the review may be long closed.
+      if not vim.api.nvim_tabpage_is_valid(state.tab) then
+        return nil
+      end
       for _, win in ipairs(vim.api.nvim_tabpage_list_wins(state.tab)) do
         if vim.bo[vim.api.nvim_win_get_buf(win)].buftype == "acwrite" then
           return win
@@ -679,7 +874,10 @@ describe("gauntlet.ui", function()
       vim.api.nvim_buf_set_lines(vim.api.nvim_win_get_buf(win), 0, -1, false,
         vim.split(text, "\n", { plain = true }))
       vim.api.nvim_set_current_win(win)
-      vim.cmd("write")
+      -- A send that fails reports it with vim.notify at ERROR level, and a
+      -- headless Neovim turns that into an error out of :write.  The refusal
+      -- is the thing being tested, so it must not end the test here.
+      pcall(vim.cmd, "write")
     end
 
     local function drawn()
