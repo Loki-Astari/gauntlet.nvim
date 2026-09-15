@@ -185,6 +185,31 @@ function M.review(input)
   end)
 end
 
+--- Fetch the comment threads, and hand GitHub anything it has taken over.
+---
+--- A comment that has been sent exists twice: as a draft of yours marked
+--- published, and as a thread fetched back from GitHub.  The fetched copy
+--- wins -- it is the one that can gain replies and be resolved -- so the
+--- draft is dropped, but only once its double has actually arrived.  A fetch
+--- that failed therefore costs nothing.
+---@param state table
+---@return table|nil store, string|nil err
+function M.settle(state)
+  local threads = require("gauntlet.threads")
+  local comments = require("gauntlet.comments")
+
+  local store, err = threads.refresh(state.repo, state.review)
+  if not store then
+    return nil, err
+  end
+
+  state.threads = store
+  if comments.forget_published(state.comments or { threads = {} }, store) > 0 then
+    comments.save(state.review, state.comments)
+  end
+  return store
+end
+
 --- Bring a review up to date with GitHub: commits pushed to the branch since
 --- it was started, and the comment threads.
 ---
@@ -203,7 +228,6 @@ function M.refresh(state)
   local github = require("gauntlet.github")
   local worktree = require("gauntlet.worktree")
   local changes = require("gauntlet.changes")
-  local threads = require("gauntlet.threads")
 
   local was = state.review.head
 
@@ -231,10 +255,8 @@ function M.refresh(state)
 
   state.pr, state.review, state.files = pr, review, files
 
-  local store, terr = threads.refresh(state.repo, review)
-  if store then
-    state.threads = store
-  else
+  local store, terr = M.settle(state)
+  if not store then
     -- A failed fetch leaves the cache alone, so the threads already on show
     -- stay on show.  The new commits are worth having without them.
     vim.notify("gauntlet: could not fetch the comment threads: " .. terr, vim.log.levels.WARN)
@@ -253,6 +275,26 @@ function M.refresh(state)
     vim.log.levels.INFO
   )
   return true
+end
+
+--- Send the comments written since the last send, with no verdict.
+--- The everyday one: say what you have found without passing judgement on the
+--- pull request as a whole.
+---@param state table
+function M.push(state)
+  require("gauntlet.ui").compose(state, "COMMENT")
+end
+
+--- Approve the pull request, sending anything still unsent along with it.
+---@param state table
+function M.approve(state)
+  require("gauntlet.ui").compose(state, "APPROVE")
+end
+
+--- Ask for changes, sending anything still unsent along with it.
+---@param state table
+function M.reject(state)
+  require("gauntlet.ui").compose(state, "REQUEST_CHANGES")
 end
 
 --- Remove a review from disk: its worktree, its ref, and its drafts.

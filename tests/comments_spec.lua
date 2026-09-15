@@ -107,6 +107,79 @@ describe("gauntlet.comments", function()
     end)
   end)
 
+  describe("handing a sent comment over to GitHub", function()
+    -- Once a comment has been sent it exists twice: here, marked published,
+    -- and as a thread fetched back from GitHub.  Drawn from both it would
+    -- appear twice on the line, so the fetched copy wins -- but only once it
+    -- has actually arrived.
+
+    local function sent(body, line)
+      local thread = comments.add(store, vim.tbl_extend("force", anchor, { line = line or 42 }), body)
+      thread.comments[1].state = "published"
+      return thread
+    end
+
+    --- The shape gauntlet.threads hands back.
+    local function fetched(body, line)
+      return {
+        threads = {
+          {
+            path = anchor.path,
+            side = anchor.side,
+            line = line or 42,
+            comments = { { author = "loki", body = body, state = "published" } },
+          },
+        },
+      }
+    end
+
+    it("drops a sent comment once GitHub hands it back", function()
+      sent("needs a test")
+      assert.equals(1, comments.forget_published(store, fetched("needs a test")))
+      assert.same({}, store.threads)
+    end)
+
+    it("keeps one GitHub has not handed back yet", function()
+      -- Otherwise a fetch that has not caught up loses the record of what was
+      -- said until the next one does.
+      sent("needs a test")
+      assert.equals(0, comments.forget_published(store, fetched("something else")))
+      assert.equals(1, #store.threads)
+    end)
+
+    it("keeps one that was never sent, whatever GitHub carries", function()
+      comments.add(store, anchor, "needs a test")
+      assert.equals(0, comments.forget_published(store, fetched("needs a test")))
+      assert.equals(1, #store.threads)
+      assert.equals(1, #comments.drafts(store))
+    end)
+
+    it("still recognises it when the line has moved", function()
+      -- A thread GitHub calls outdated reports the line it was pinned to, not
+      -- the one it was written against, so the line cannot be part of the
+      -- match.
+      sent("needs a test", 42)
+      assert.equals(1, comments.forget_published(store, fetched("needs a test", 17)))
+      assert.same({}, store.threads)
+    end)
+
+    it("copes with nothing fetched at all", function()
+      sent("needs a test")
+      assert.equals(0, comments.forget_published(store, nil))
+      assert.equals(0, comments.forget_published(store, {}))
+      assert.equals(1, #store.threads)
+    end)
+
+    it("leaves the rest of the file alone", function()
+      sent("gone")
+      comments.add(store, anchor, "still mine")
+      comments.forget_published(store, fetched("gone"))
+
+      assert.equals(1, #store.threads)
+      assert.equals("still mine", store.threads[1].comments[1].body)
+    end)
+  end)
+
   describe("persistence", function()
     it("survives a round trip to disk", function()
       comments.add(store, anchor, "needs a test")

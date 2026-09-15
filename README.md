@@ -103,9 +103,39 @@ are in view, recomputes the file list and diffs, and fetches the threads. The
 file you were looking at stays on show; a failed thread fetch leaves the cache
 alone.
 
-Nothing leaves your machine until `:GauntletSubmit`, which sends the lot as a
-single GitHub review: a verdict, a covering note, and the line comments. If it
-fails, your comments are untouched and you can try again.
+### Sending a review
+
+Nothing leaves your machine until you say so:
+
+| | |
+| --- | --- |
+| `:GauntletPush` | send the comments written since the last send, no verdict |
+| `:GauntletApprove` | approve |
+| `:GauntletReject` | ask for changes |
+| `:GauntletSubmit` | pick one of the three |
+
+Each opens a buffer for the covering note — `:w` sends, `:q` calls it off — and
+goes to GitHub as GitHub models a review: a verdict, a note, and the line
+comments in one request. Only comments you haven't already sent go, so a
+verdict after a push carries whatever you wrote since, and approving needs no
+separate sync — the comments ride along with it and can't be left behind by a
+failure halfway.
+
+Two things are checked first. That every comment still sits on a line of the
+diff, because GitHub refuses a whole review over one it can't place. And that
+the branch hasn't moved since you opened the review, because approving a PR
+that is no longer the one on screen is the failure worth preventing — that one
+asks you to `:GauntletRefresh` rather than swapping the diff out from under a
+verdict you just gave.
+
+If sending fails nothing has left the machine: the comments are untouched and
+the note is still in its buffer. (GitHub won't let you approve your own PR, and
+says so.)
+
+Once a comment has been sent, the threads are fetched again and the local copy
+is dropped — GitHub's is the one that can gain replies and be resolved. It's
+dropped only once its double has actually arrived, so a failed fetch costs
+nothing.
 
 `:GauntletDiscard` removes a review from disk when you are done with it.
 
