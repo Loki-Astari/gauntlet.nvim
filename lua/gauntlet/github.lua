@@ -136,30 +136,18 @@ local function api_error(out)
   return out ~= "" and out or "gh exited with an error"
 end
 
---- Post a review: a verdict, a covering note, and the line comments together.
----
---- One request, because that is how GitHub models a review -- and it is what
---- lets the comments be written offline and sent in a single go.  It is also
---- all or nothing: a comment GitHub will not accept takes the verdict and the
---- covering note down with it, which is why gauntlet.send checks first.
----@param repo table { owner, repo }
----@param number integer
----@param payload table { commit_id, body, event, comments }
----@return table|nil review, string|nil err
-function M.submit_review(repo, number, payload)
+--- POST to the API and decode what comes back.
+---@param path string  a repos/... path
+---@param payload table
+---@return table|nil decoded, string|nil err
+local function api_post(path, payload)
   local config = require("gauntlet").config
   if vim.fn.executable(config.gh) == 0 then
     return nil, ("%s not found on PATH; install the GitHub CLI"):format(config.gh)
   end
 
   local out = vim.fn.system({
-    config.gh,
-    "api",
-    ("repos/%s/%s/pulls/%d/reviews"):format(repo.owner, repo.repo, number),
-    "--method",
-    "POST",
-    "--input",
-    "-",
+    config.gh, "api", path, "--method", "POST", "--input", "-",
   }, vim.json.encode(payload))
 
   if vim.v.shell_error ~= 0 then
@@ -171,6 +159,36 @@ function M.submit_review(repo, number, payload)
     return nil, "could not parse the response from gh"
   end
   return decoded
+end
+
+--- Create a review: the line comments, and optionally a verdict.
+---
+--- With an `event` in the payload GitHub publishes the review at once, and
+--- then demands a covering note for COMMENT and REQUEST_CHANGES.  Without
+--- one the review is left pending -- a draft only its author can see -- where
+--- the note is optional.  That is what lets comments go up with nothing
+--- written over them; see gauntlet.send.
+---@param repo table { owner, repo }
+---@param number integer
+---@param payload table { commit_id, body?, event?, comments }
+---@return table|nil review, string|nil err
+function M.create_review(repo, number, payload)
+  return api_post(
+    ("repos/%s/%s/pulls/%d/reviews"):format(repo.owner, repo.repo, number), payload)
+end
+
+--- Give a pending review its verdict, which publishes it.
+--- The covering note is optional here, where creating a review outright
+--- requires one for COMMENT and REQUEST_CHANGES.
+---@param repo table { owner, repo }
+---@param number integer
+---@param review_id integer|string
+---@param payload table { event, body? }
+---@return table|nil review, string|nil err
+function M.submit_review(repo, number, review_id, payload)
+  return api_post(
+    ("repos/%s/%s/pulls/%d/reviews/%s/events"):format(
+      repo.owner, repo.repo, number, tostring(review_id)), payload)
 end
 
 --- The comments of a review, in the shape GitHub's reviews endpoint wants.

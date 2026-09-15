@@ -42,7 +42,16 @@ vim.api.nvim_create_user_command("GauntletPush", function()
     require("gauntlet").push(state)
   end
 end, {
-  desc = "Send the comments written since the last send, with no verdict",
+  desc = "Send the comments written since the last send, and nothing else",
+})
+
+vim.api.nvim_create_user_command("GauntletNote", function()
+  local state = review("write a note on")
+  if state then
+    require("gauntlet").note(state)
+  end
+end, {
+  desc = "Write something about the pull request as a whole, and send it",
 })
 
 vim.api.nvim_create_user_command("GauntletApprove", function()

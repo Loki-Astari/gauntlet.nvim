@@ -12,26 +12,26 @@
 -- the second time.
 local M = {}
 
---- What GitHub will accept as a verdict, and what each one needs.
+--- What GitHub will accept as a verdict.
 ---
---- `note` is GitHub's own rule: a body is required for COMMENT and
---- REQUEST_CHANGES, and optional for APPROVE.  Asking for it here rather than
---- letting the request fail keeps the reason in Neovim, where the note still
---- is.
+--- `demands_note` is GitHub's own rule about creating a review outright: a
+--- body is required for COMMENT and REQUEST_CHANGES, and optional for
+--- APPROVE.  It is not a rule about gauntlet -- nothing here makes anyone
+--- write a note, because a review submitted in two steps needs none.
 M.EVENTS = {
   COMMENT = {
-    label = "Comment -- send the comments without a verdict",
-    note = true,
+    label = "Comment -- the line comments, with a note over them",
+    demands_note = true,
     done = "commented on",
   },
   APPROVE = {
     label = "Approve",
-    note = false,
+    demands_note = false,
     done = "approved",
   },
   REQUEST_CHANGES = {
     label = "Request changes",
-    note = true,
+    demands_note = true,
     done = "requested changes on",
   },
 }
@@ -126,18 +126,23 @@ function M.current(state)
   return true
 end
 
---- Send the unsent comments, with a verdict, as one review.
+--- Put a review up, in whichever way GitHub will take it.
 ---
---- Everything is checked first, because GitHub takes the request whole: a
---- single comment it will not accept loses the covering note and the verdict
---- with it.
+--- GitHub demands a covering note when a COMMENT or REQUEST_CHANGES review is
+--- created outright, and a push has none to give.  It does not demand one of
+--- a review created *without* a verdict -- that is a draft, visible to nobody
+--- else -- nor of the verdict that is then given to it.  So a send with no
+--- note goes in two steps, which is what GitHub's own web interface does when
+--- you start a review, add comments and finish it.
 ---
---- On success the comments are marked as sent, which is what keeps the next
---- send from repeating them.  They are dropped for good only once GitHub's
---- own copy has been fetched back -- see gauntlet.settle.
+--- One step wherever one will do, because the two-step form can be
+--- interrupted between them, leaving a draft review on GitHub holding the
+--- comments.  That is recoverable -- the id is kept, and the next send
+--- submits it rather than starting another -- but better not to risk for a
+--- send that never needed it.
 ---@param state table
 ---@param event string  a key of M.EVENTS
----@param body string|nil  the covering note
+---@param body string|nil  the covering note, which may be nothing at all
 ---@return table|nil sent { review, drafts, event }, string|nil err
 function M.send(state, event, body)
   local github = require("gauntlet.github")
@@ -147,12 +152,7 @@ function M.send(state, event, body)
   if not spec then
     return nil, ("%s is not a verdict GitHub understands"):format(tostring(event))
   end
-
   body = vim.trim(body or "")
-  if spec.note and body == "" then
-    return nil, ("GitHub needs a covering note to %s a pull request"):format(
-      event == "COMMENT" and "comment on" or "request changes on")
-  end
 
   local ok, err = M.ready(state, event)
   if not ok then
@@ -166,17 +166,49 @@ function M.send(state, event, body)
 
   local drafts = comments.drafts(state.comments)
   local review
-  review, err = github.submit_review(state.repo, state.pr.number, {
-    commit_id = state.review.head,
-    body = body,
-    event = event,
-    comments = github.review_comments(drafts),
-  })
+
+  -- A draft review left behind by a send that failed halfway already holds
+  -- these comments; give it its verdict rather than sending them twice.
+  local pending = state.comments.pending
+
+  if pending then
+    review, err = github.submit_review(state.repo, state.pr.number, pending, {
+      event = event,
+      body = body,
+    })
+  elseif body == "" and spec.demands_note then
+    review, err = github.create_review(state.repo, state.pr.number, {
+      commit_id = state.review.head,
+      comments = github.review_comments(drafts),
+    })
+    if review then
+      -- Remember it before the verdict, so an interruption between the two
+      -- leaves something to pick up rather than an orphan.
+      state.comments.pending = review.id
+      comments.save(state.review, state.comments)
+
+      review, err = github.submit_review(state.repo, state.pr.number, review.id, {
+        event = event,
+        body = body,
+      })
+    end
+  else
+    review, err = github.create_review(state.repo, state.pr.number, {
+      commit_id = state.review.head,
+      body = body,
+      event = event,
+      comments = github.review_comments(drafts),
+    })
+  end
+
   if not review then
-    -- Nothing was written, so this can simply be tried again.
+    if state.comments.pending then
+      err = err .. ("; the comments are in a draft review on GitHub, and sending again will submit it")
+    end
     return nil, err
   end
 
+  state.comments.pending = nil
   for _, thread in ipairs(drafts) do
     for _, comment in ipairs(thread.comments or {}) do
       comment.state = "published"

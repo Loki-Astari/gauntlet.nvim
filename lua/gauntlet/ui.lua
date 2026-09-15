@@ -281,6 +281,23 @@ function M.highlights()
     GauntletCommentBorder = "FloatBorder",
     GauntletCommentSign = "DiagnosticSignInfo",
     GauntletCommentAuthor = "Title",
+
+    -- The file list.  Added, Changed and Removed are Neovim's own groups for
+    -- exactly this, and colour the text; DiffAdd and its siblings colour the
+    -- *background*, which puts the letter in a block rather than tinting it.
+    GauntletStatusAdded = "Added",
+    GauntletStatusModified = "Changed",
+    GauntletStatusDeleted = "Removed",
+    GauntletStatusRenamed = "Changed",
+    GauntletAdded = "Added",
+    GauntletRemoved = "Removed",
+    -- Open threads in the same blue as their signs in the diff; settled ones
+    -- recede, having been dealt with.
+    GauntletThread = "DiagnosticSignInfo",
+    GauntletSettled = "Comment",
+    -- The directory is context; the filename is what is being looked at.
+    GauntletPathDir = "Comment",
+    GauntletPathFile = "Normal",
   }
   for group, target in pairs(links) do
     vim.api.nvim_set_hl(0, group, { link = target, default = true })
@@ -613,6 +630,74 @@ local function open_entry(state)
   M.render_sidebar(state)
 end
 
+--- How wide the status letter and its surrounding spaces are: "  M ".
+local ROW_PREFIX = 4
+
+--- Fit a path into `room` display cells.
+---
+--- Directories are shortened before anything is cut: `l/g/ui.lua` still says
+--- which `ui.lua` it is, where taking the front off the path would not.  Only
+--- when even that will not fit is the end kept, the filename being the part
+--- worth reading.
+---@param path string
+---@param room integer
+---@return string
+local function fit_path(path, room)
+  if vim.fn.strdisplaywidth(path) <= room then
+    return path
+  end
+
+  local parts = vim.split(path, "/", { plain = true })
+  for index = 1, #parts - 1 do
+    -- Two characters for a dotted directory, so `.github` does not come out
+    -- as a bare dot.
+    parts[index] = vim.fn.strcharpart(parts[index], 0, parts[index]:sub(1, 1) == "." and 2 or 1)
+  end
+  local short = table.concat(parts, "/")
+
+  if vim.fn.strdisplaywidth(short) <= room then
+    return short
+  end
+  return "…" .. vim.fn.strcharpart(short, vim.fn.strchars(short) - room + 1)
+end
+
+--- What each column of the file list has to be wide enough to hold.
+---
+--- Measured once over the whole list rather than per row, which is what makes
+--- the columns line up: a row that worked out its own widths would put its
+--- counts wherever its own path happened to end.
+---@param state table
+---@param open_count table<string, integer>
+---@param settled table<string, integer>
+---@return table widths { path, marker, adds, dels }
+local function columns(state, open_count, settled)
+  local widths = { marker = 0, adds = 0, dels = 0 }
+
+  for _, file in ipairs(state.files) do
+    widths.adds = math.max(widths.adds, vim.fn.strdisplaywidth(("+%d"):format(file.additions)))
+    widths.dels = math.max(widths.dels, vim.fn.strdisplaywidth(("−%d"):format(file.deletions)))
+
+    local marker = 0
+    if open_count[file.path] then
+      marker = vim.fn.strdisplaywidth(("●%d"):format(open_count[file.path]))
+    end
+    if settled[file.path] then
+      marker = marker + (marker > 0 and 1 or 0)
+        + vim.fn.strdisplaywidth(("✓%d"):format(settled[file.path]))
+    end
+    widths.marker = math.max(widths.marker, marker)
+  end
+
+  -- The marker column costs nothing at all when no file carries a thread.
+  widths.path = SIDEBAR_WIDTH
+    - ROW_PREFIX
+    - (widths.marker > 0 and widths.marker + 1 or 0)
+    - 1 - widths.adds
+    - 1 - widths.dels
+  widths.path = math.max(widths.path, 8)
+  return widths
+end
+
 --- Draw the file list.
 ---@param state table
 function M.render_sidebar(state)
@@ -624,8 +709,27 @@ function M.render_sidebar(state)
       map[#lines] = entry
     end
     if hl then
-      table.insert(marks, { line = #lines - 1, group = hl })
+      table.insert(marks, { line = #lines - 1, group = hl, from = 0, to = -1 })
     end
+  end
+
+  --- One file's row, assembled from pieces so each can be coloured on its
+  --- own.  Offsets are counted in bytes, which is what the highlight wants,
+  --- and widths in display cells, which is what the eye wants.
+  local function add_file(chunks, entry)
+    local text = ""
+    for _, chunk in ipairs(chunks) do
+      if chunk[2] and chunk[1] ~= "" then
+        table.insert(marks, {
+          line = #lines,
+          group = chunk[2],
+          from = #text,
+          to = #text + #chunk[1],
+        })
+      end
+      text = text .. chunk[1]
+    end
+    add(text, entry)
   end
 
   add(M.title(state.pr), nil, "Title")
@@ -644,22 +748,56 @@ function M.render_sidebar(state)
     settled[thread.path] = (settled[thread.path] or 0) + 1
   end
 
+  local widths = columns(state, open_count, settled)
+  local status_hl = {
+    A = "GauntletStatusAdded",
+    M = "GauntletStatusModified",
+    D = "GauntletStatusDeleted",
+    R = "GauntletStatusRenamed",
+    C = "GauntletStatusRenamed",
+  }
+
   for _, file in ipairs(state.files) do
-    local counts = ("+%d −%d"):format(file.additions, file.deletions)
-    local mark = open_count[file.path] and ("●%d "):format(open_count[file.path]) or ""
-    if settled[file.path] then
-      mark = mark .. ("✓%d "):format(settled[file.path])
+    local chunks = { { "  " }, { file.status, status_hl[file.status] }, { " " } }
+
+    local shown = fit_path(file.path, widths.path)
+    local dir, name = shown:match("^(.*/)([^/]*)$")
+    table.insert(chunks, { dir or "", "GauntletPathDir" })
+    table.insert(chunks, { name or shown, "GauntletPathFile" })
+    table.insert(chunks, { string.rep(" ", widths.path - vim.fn.strdisplaywidth(shown)) })
+
+    if widths.marker > 0 then
+      local parts = {}
+      if open_count[file.path] then
+        table.insert(parts, { ("●%d"):format(open_count[file.path]), "GauntletThread" })
+      end
+      if settled[file.path] then
+        table.insert(parts, { ("✓%d"):format(settled[file.path]), "GauntletSettled" })
+      end
+
+      local used = 0
+      for index, part in ipairs(parts) do
+        used = used + vim.fn.strdisplaywidth(part[1]) + (index > 1 and 1 or 0)
+      end
+
+      table.insert(chunks, { " " .. string.rep(" ", widths.marker - used) })
+      for index, part in ipairs(parts) do
+        if index > 1 then
+          table.insert(chunks, { " " })
+        end
+        table.insert(chunks, part)
+      end
     end
-    local room = SIDEBAR_WIDTH - 6 - #counts - vim.fn.strdisplaywidth(mark)
-    local path = file.path
-    if vim.fn.strdisplaywidth(path) > room then
-      -- Keep the end of a long path: the filename matters more than the tree.
-      path = "…" .. path:sub(-room + 1)
+
+    for _, count in ipairs({
+      { ("+%d"):format(file.additions), widths.adds, "GauntletAdded" },
+      { ("−%d"):format(file.deletions), widths.dels, "GauntletRemoved" },
+    }) do
+      table.insert(chunks, { " " .. string.rep(" ", count[2] - vim.fn.strdisplaywidth(count[1])) })
+      table.insert(chunks, { count[1], count[3] })
     end
-    add(
-      ("  %s %-" .. room .. "s %s%s"):format(file.status, path, mark, counts),
-      { kind = "file", file = file }
-    )
+
+    add_file(chunks, { kind = "file", file = file })
   end
 
   state.lines = map
@@ -671,20 +809,12 @@ function M.render_sidebar(state)
   local ns = vim.api.nvim_create_namespace("GauntletSidebar")
   vim.api.nvim_buf_clear_namespace(state.sidebar_buf, ns, 0, -1)
   for _, mark in ipairs(marks) do
-    vim.api.nvim_buf_add_highlight(state.sidebar_buf, ns, mark.group, mark.line, 0, -1)
+    vim.api.nvim_buf_add_highlight(
+      state.sidebar_buf, ns, mark.group, mark.line, mark.from, mark.to)
   end
-  -- Colour the status letter by what it means.
-  local status_hl = { A = "DiffAdd", D = "DiffDelete", M = "DiffChange", R = "DiffChange", C = "DiffChange" }
-  for line, entry in pairs(map) do
-    if entry.kind == "file" then
-      local hl = status_hl[entry.file.status]
-      if hl then
-        vim.api.nvim_buf_add_highlight(state.sidebar_buf, ns, hl, line - 1, 2, 3)
-      end
-    end
-    if line == state.current then
-      vim.api.nvim_buf_add_highlight(state.sidebar_buf, ns, "CursorLine", line - 1, 0, -1)
-    end
+  if state.current then
+    vim.api.nvim_buf_add_highlight(
+      state.sidebar_buf, ns, "CursorLine", state.current - 1, 0, -1)
   end
 end
 
@@ -870,7 +1000,9 @@ function M.submit(state)
   local send = require("gauntlet.send")
   local drafts = comments.drafts(state.comments)
 
-  local verdicts = {}
+  local verdicts = {
+    { label = "Push -- the line comments on their own", push = true },
+  }
   for _, event in ipairs(send.ORDER) do
     table.insert(verdicts, { event = event, label = send.EVENTS[event].label })
   end
@@ -882,10 +1014,41 @@ function M.submit(state)
       return item.label
     end,
   }, function(choice)
-    if choice then
+    if not choice then
+      return
+    end
+    if choice.push then
+      require("gauntlet").push(state)
+    else
       M.compose(state, choice.event)
     end
   end)
+end
+
+--- What follows a send, whether or not a note was written over it.
+---@param state table
+---@param sent table  as gauntlet.send.send returns
+function M.delivered(state, sent)
+  local send = require("gauntlet.send")
+
+  -- GitHub owns those comments now.  Fetching the threads back is what lets
+  -- the drafts go, and what puts your own words on the line as the thread
+  -- they have become.
+  local _, ferr = require("gauntlet").settle(state)
+  if ferr then
+    vim.notify("gauntlet: sent, but could not fetch the threads back: " .. ferr, vim.log.levels.WARN)
+  end
+  M.redraw(state)
+
+  vim.notify(
+    ("gauntlet: %s #%d%s"):format(
+      send.EVENTS[sent.event].done,
+      state.pr.number,
+      sent.drafts > 0
+          and (", with %d comment%s"):format(sent.drafts, sent.drafts == 1 and "" or "s")
+        or ""),
+    vim.log.levels.INFO
+  )
 end
 
 --- Write the covering note, then send.  `:w` sends; `:q` calls it off.
@@ -898,10 +1061,8 @@ end
 ---@param event string  a key of gauntlet.send.EVENTS
 function M.compose(state, event)
   local send = require("gauntlet.send")
-  local gauntlet = require("gauntlet")
 
-  local spec = send.EVENTS[event]
-  if not spec then
+  if not send.EVENTS[event] then
     vim.notify(("gauntlet: %s is not a verdict"):format(tostring(event)), vim.log.levels.ERROR)
     return
   end
@@ -943,28 +1104,7 @@ function M.compose(state, event)
 
       vim.bo[buf].modified = false
       pcall(vim.api.nvim_win_close, win, true)
-
-      -- GitHub owns those comments now.  Fetching the threads back is what
-      -- lets the drafts go, and what puts your own words on the line as the
-      -- thread they have become.
-      local _, ferr = gauntlet.settle(state)
-      if ferr then
-        vim.notify(
-          "gauntlet: sent, but could not fetch the threads back: " .. ferr,
-          vim.log.levels.WARN
-        )
-      end
-      M.redraw(state)
-
-      vim.notify(
-        ("gauntlet: %s #%d%s"):format(
-          spec.done,
-          state.pr.number,
-          sent.drafts > 0
-              and (", with %d comment%s"):format(sent.drafts, sent.drafts == 1 and "" or "s")
-            or ""),
-        vim.log.levels.INFO
-      )
+      M.delivered(state, sent)
     end,
   })
 

@@ -277,11 +277,39 @@ function M.refresh(state)
   return true
 end
 
---- Send the comments written since the last send, with no verdict.
---- The everyday one: say what you have found without passing judgement on the
---- pull request as a whole.
+--- Send the comments written since the last send, and nothing else.
+---
+--- The everyday one, and the reason it asks for nothing: the comments say
+--- what they have to say where they sit, and stopping to write a summary over
+--- them is a toll on the common case.  :GauntletNote is there for when there
+--- is something to say about the pull request as a whole.
 ---@param state table
+---@return boolean ok
 function M.push(state)
+  local send = require("gauntlet.send")
+  local ui = require("gauntlet.ui")
+
+  local ok, err = send.ready(state, "COMMENT")
+  if not ok then
+    vim.notify("gauntlet: " .. err, vim.log.levels.WARN)
+    return false
+  end
+
+  local sent
+  sent, err = send.send(state, "COMMENT", "")
+  if not sent then
+    vim.notify("gauntlet: could not send: " .. err, vim.log.levels.ERROR)
+    return false
+  end
+
+  ui.delivered(state, sent)
+  return true
+end
+
+--- Write something about the pull request as a whole, and send it -- with
+--- anything still unsent underneath it.
+---@param state table
+function M.note(state)
   require("gauntlet.ui").compose(state, "COMMENT")
 end
 
