@@ -1,5 +1,7 @@
 # gauntlet.nvim
 
+This is a claude modification.
+
 ## What this project is
 
 A Neovim plugin for reviewing GitHub pull requests locally, without leaving the
