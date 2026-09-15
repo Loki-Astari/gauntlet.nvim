@@ -507,8 +507,8 @@ describe("gauntlet.ui", function()
     end
   end
 
-  local function write_comment(text, line)
-    select_entry("change.txt")
+  local function write_comment(text, line, file)
+    select_entry(file or "change.txt")
     press("c", line or 2)
     local win = assert(composer(), "no composer opened")
     vim.api.nvim_buf_set_lines(vim.api.nvim_win_get_buf(win), 0, -1, false,
@@ -844,6 +844,119 @@ describe("gauntlet.ui", function()
         vim.api.nvim_win_get_buf(panes()[1]), ns, 0, -1, {})
       assert.equals(1, #left)
       assert.equals(0, #notes())
+    end)
+  end)
+
+  describe("a pull request of your own", function()
+    -- The fixture's working tree stands in for the review worktree, so
+    -- writing in it is what the author editing the right-hand pane amounts to.
+    local author = require("gauntlet.author")
+    local comments = require("gauntlet.comments")
+
+    local function as_author()
+      state.review.mine = true
+      state.review.branch = "pr"
+      ui.render_sidebar(state)
+    end
+
+    local function edit_in_worktree(path, text)
+      vim.fn.writefile(vim.split(text, "\n", { plain = true }),
+        vim.fs.joinpath(state.review.worktree, path))
+    end
+
+    local function right_buf()
+      return vim.api.nvim_win_get_buf(panes()[2])
+    end
+
+    it("leaves someone else's review shut", function()
+      select_entry("change.txt")
+      assert.is_false(vim.bo[right_buf()].modifiable)
+      assert.is_true(vim.bo[right_buf()].readonly)
+    end)
+
+    it("opens the right-hand side for editing when it is yours", function()
+      as_author()
+      select_entry("change.txt")
+      assert.is_true(vim.bo[right_buf()].modifiable)
+      assert.is_false(vim.bo[right_buf()].readonly)
+    end)
+
+    it("still refuses the left-hand side, which is the base", function()
+      as_author()
+      select_entry("change.txt")
+      assert.is_false(vim.bo[vim.api.nvim_win_get_buf(panes()[1])].modifiable)
+    end)
+
+    it("keeps unwritten work when another file is selected", function()
+      -- Tidying up used to force-delete the pane, which would take the edit
+      -- with it.
+      as_author()
+      select_entry("change.txt")
+      local buf = right_buf()
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "alpha", "EDITED", "gamma" })
+      assert.is_true(vim.bo[buf].modified)
+
+      select_entry("big.txt")
+      assert.is_true(vim.api.nvim_buf_is_valid(buf), "the edited buffer was thrown away")
+      assert.same(
+        { "alpha", "EDITED", "gamma" },
+        vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+      )
+    end)
+
+    it("marks a file the worktree has changed", function()
+      edit_in_worktree("change.txt", "alpha\nBETA\ngamma\ndelta")
+      as_author()
+
+      local row
+      for _, line in ipairs(sidebar_lines()) do
+        if line:find("change.txt", 1, true) and line:match("^  %a ") then
+          row = line
+        end
+      end
+      assert.is_truthy(row:find("✎", 1, true), "no local mark on " .. row)
+      assert.is_nil(
+        (sidebar_lines()[line_of("big.txt")]):find("✎", 1, true),
+        "an untouched file should carry no local mark")
+    end)
+
+    it("says in the header how much is not on GitHub", function()
+      edit_in_worktree("change.txt", "alpha\nBETA\ngamma\ndelta")
+      as_author()
+      assert.is_truthy(table.concat(sidebar_lines(), "\n"):find("1 uncommitted", 1, true))
+    end)
+
+    it("says nothing in the header when the worktree is clean", function()
+      as_author()
+      assert.is_nil(table.concat(sidebar_lines(), "\n"):find("uncommitted", 1, true))
+    end)
+
+    it("refuses a comment on a file that is not on GitHub", function()
+      -- Its line numbers are not GitHub's, so the comment would land
+      -- somewhere else entirely.
+      edit_in_worktree("change.txt", "alpha\nBETA\ngamma\ndelta")
+      as_author()
+      select_entry("change.txt")
+      press("c", 2)
+
+      assert.is_nil(composer(), "a composer should not have opened")
+      assert.same({}, comments.drafts(state.comments))
+    end)
+
+    it("takes a comment on a file it has not touched", function()
+      -- Only the edited file is out of step with GitHub; the rest of the pull
+      -- request is still exactly what GitHub holds.
+      edit_in_worktree("change.txt", "alpha\nBETA\ngamma\ndelta")
+      as_author()
+      assert.same(
+        { "change.txt" },
+        vim.tbl_map(function(change)
+          return change.path
+        end, author.dirty(state.review))
+      )
+
+      write_comment("fine here", 20, "big.txt")
+      assert.equals(1, #comments.drafts(state.comments))
     end)
   end)
 

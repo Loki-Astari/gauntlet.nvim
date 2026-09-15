@@ -59,9 +59,10 @@ left, and on the right either the PR's description or a two-pane diff.
 | `<C-w>f` | Jump back to the file list |
 
 Diffs use Neovim's own diff mode, so `]c`, `[c` and folding behave as they do
-in `vimdiff`. Everything is read-only — the right-hand side is a real file in
-the review worktree, so a language server and `gd` work on it, but reviewing
-cannot change a checkout. The panes stay out of the buffer list and are
+in `vimdiff`. Reviewing someone else's PR is read-only — the right-hand side is
+a real file in the review worktree, so a language server and `gd` work on it,
+but reviewing cannot change a checkout. Your own PR is the exception; see
+[answering a review of your own](#answering-a-review-of-your-own). The panes stay out of the buffer list and are
 discarded as you move on, so a review leaves nothing behind in `:ls`, `<C-^>`
 or a bufferline.
 
@@ -174,6 +175,43 @@ dropped only once its double has actually arrived, so a failed fetch costs
 nothing.
 
 `:GauntletDiscard` removes a review from disk when you are done with it.
+
+### Answering a review of your own
+
+Sometimes the quickest answer to a comment is the change it asks for. When the
+account `gh` is authenticated as is the PR's author, the right-hand pane opens
+writable and `:w` writes the file in the review worktree — the same file the
+language server is already reading.
+
+| | |
+| --- | --- |
+| `:GauntletCommit` | commit what the worktree has changed |
+| `:GauntletPublish` | push it onto the PR's branch |
+
+The file list then follows the worktree rather than the commit, so an edit
+shows in the counts as soon as it's written — including a file you've just
+created, which `git diff` can't see until it's staged. Work that isn't on
+GitHub is marked `✎`, against the file and in the header:
+
+```
+PR Review 1
+o/r
+✎ 1 uncommitted
+  Conversation
+  Files (3)
+  M change.txt                   ✎ +3 −1
+  D gone.txt                       +0 −1
+  A new.txt                        +1 −0
+```
+
+Two things follow. A comment can't be left on a file with unpublished changes —
+its line numbers aren't GitHub's, so the comment would land somewhere else. And
+`:GauntletRefresh` won't reset a worktree holding work, committed or not; it
+stops and says which. Nothing gauntlet does tidily discards an unwritten
+buffer either.
+
+A PR from a fork has its branch in another repository. Publishing looks for it
+among your remotes and says so rather than guessing if it isn't there.
 
 ### Offline
 
