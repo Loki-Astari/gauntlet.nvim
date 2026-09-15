@@ -1,5 +1,7 @@
 # gauntlet.nvim
 
+A change to commit.
+
 A Neovim user interface for reviewing GitHub pull requests locally.
 
 > **Status: early.** A review shows the PR's description, a two-pane diff of
