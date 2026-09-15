@@ -143,6 +143,11 @@ Everything is read-only.  The right-hand side is a real file in the review
 worktree, which is what lets a language server, |gd| and |K| work on it, but
 it is opened non-modifiable: reviewing must not be able to change a checkout.
 
+The panes stay out of the buffer list, and are discarded as you move on, so a
+review leaves nothing behind in |:ls|, |CTRL-^| or a bufferline plugin -- a
+pane is furniture, not a file you opened.  A buffer you have split off into
+another tab page yourself is left alone.
+
 ==============================================================================
 7. COMMENTS                                                 *gauntlet-comments*
 

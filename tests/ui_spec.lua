@@ -235,6 +235,58 @@ describe("gauntlet.ui", function()
       end
     end)
 
+    it("shows the real file on the right, so LSP and gd have a path", function()
+      -- The reason the whole project is checked out: the right-hand side is a
+      -- genuine file, with its filetype detected from it.
+      select_entry("change.txt")
+      local buf = vim.api.nvim_win_get_buf(panes()[2])
+      assert.equals("", vim.bo[buf].buftype)
+      assert.equals(
+        vim.fn.resolve(vim.fs.joinpath(state.review.worktree, "change.txt")),
+        vim.fn.resolve(vim.api.nvim_buf_get_name(buf))
+      )
+    end)
+
+    it("keeps that file out of the buffer list", function()
+      -- It is a pane of the review, not a document the reviewer opened.  A
+      -- listed buffer shows in :ls, in <C-^> and in bufferline plugins, where
+      -- it reads as the file having been opened a second time.
+      select_entry("change.txt")
+      for _, win in ipairs(panes()) do
+        assert.is_false(vim.bo[vim.api.nvim_win_get_buf(win)].buflisted)
+      end
+      assert.is_nil(
+        vim.api.nvim_exec2("ls", { output = true }).output:find("change.txt", 1, true)
+      )
+    end)
+
+    it("writes no swap file for a side that cannot be edited", function()
+      select_entry("change.txt")
+      assert.equals("", vim.fn.swapname(vim.api.nvim_win_get_buf(panes()[2])))
+    end)
+
+    it("leaves no buffer behind when another file is selected", function()
+      -- Otherwise browsing a pull request strands one buffer per file looked at.
+      select_entry("change.txt")
+      local left, right = vim.api.nvim_win_get_buf(panes()[1]), vim.api.nvim_win_get_buf(panes()[2])
+
+      select_entry("big.txt")
+      assert.is_false(vim.api.nvim_buf_is_valid(left))
+      assert.is_false(vim.api.nvim_buf_is_valid(right))
+    end)
+
+    it("spares a buffer the reviewer opened in another tab page", function()
+      select_entry("change.txt")
+      local right = vim.api.nvim_win_get_buf(panes()[2])
+
+      vim.cmd("tabnew")
+      vim.api.nvim_win_set_buf(0, right)
+      vim.api.nvim_set_current_tabpage(state.tab)
+
+      select_entry("big.txt")
+      assert.is_true(vim.api.nvim_buf_is_valid(right))
+    end)
+
     it("goes back to the conversation", function()
       select_entry("change.txt")
       assert.equals(2, #panes())

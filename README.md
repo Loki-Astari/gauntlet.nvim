@@ -59,7 +59,9 @@ left, and on the right either the PR's description or a two-pane diff.
 Diffs use Neovim's own diff mode, so `]c`, `[c` and folding behave as they do
 in `vimdiff`. Everything is read-only — the right-hand side is a real file in
 the review worktree, so a language server and `gd` work on it, but reviewing
-cannot change a checkout.
+cannot change a checkout. The panes stay out of the buffer list and are
+discarded as you move on, so a review leaves nothing behind in `:ls`, `<C-^>`
+or a bufferline.
 
 ### Comments
 
