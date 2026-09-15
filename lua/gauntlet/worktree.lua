@@ -95,44 +95,28 @@ local function write_json(path, value)
   pcall(vim.fn.writefile, vim.split(vim.json.encode(value), "\n", { plain = true }), path)
 end
 
---- Bring a pull request onto disk, or reconnect to a review already there.
+--- Fetch the pull request's head and put the review onto it.
 ---
---- Needs the network the first time and never again: see the cache warming
---- at the end, without which a partial clone would fetch base-side blobs
---- lazily, one network round trip at a time, as files are opened.
+--- Shared by open(), which does this the first time, and update(), which does
+--- it again once the branch has moved on.  It always needs the network, and
+--- always ends with the worktree, meta.json and the returned review agreeing
+--- on one commit.
+---@param root string  repository root
 ---@param repo table { name, owner, repo }
 ---@param pr table  as returned by gauntlet.github
----@return table|nil review { dir, worktree, base, head, number }, string|nil err
-function M.open(repo, pr)
-  local root, err = git.root()
-  if not root then
-    return nil, err
-  end
-
+---@return table|nil review, string|nil err
+local function sync(root, repo, pr)
   local dir = M.dir(repo, pr.number)
   local worktree = vim.fs.joinpath(dir, "worktree")
   local meta_path = vim.fs.joinpath(dir, "meta.json")
-
-  if registered(root, worktree) and vim.fn.isdirectory(worktree) == 1 then
-    local meta = read_json(meta_path)
-    if meta and meta.base and meta.head then
-      return {
-        dir = dir,
-        worktree = worktree,
-        base = meta.base,
-        head = meta.head,
-        number = pr.number,
-      }
-    end
-    -- The worktree is there but we cannot say what it holds; start again.
-    git.run(root, { "worktree", "remove", "--force", worktree })
-  end
 
   local ref = pr_ref(pr.number)
   local remote = repo.name or "origin"
 
   -- refs/pull/<n>/head exists on the base repository even when the pull
-  -- request comes from a fork, so this one fetch covers both cases.
+  -- request comes from a fork, so this one fetch covers both cases.  The `+`
+  -- matters on a second pass: a force-push rewrites the branch, and without
+  -- it the fetch would be refused as a non-fast-forward.
   local _, ferr = git.run(root, {
     "fetch", remote, ("+refs/pull/%d/head:%s"):format(pr.number, ref),
   })
@@ -140,12 +124,20 @@ function M.open(repo, pr)
     return nil, ("could not fetch pull request #%d: %s"):format(pr.number, ferr)
   end
 
-  local head = pr.headRefOid
+  -- The head is what the fetch actually brought, not pr.headRefOid.  They
+  -- agree when the metadata is fresh, and when they disagree it is the ref
+  -- that is right -- and the ref is what gets checked out.
+  local out = git.run(root, { "rev-parse", ref })
+  local head = out and out[1]
+  if not head or head == "" then
+    return nil, ("could not find the head of pull request #%d"):format(pr.number)
+  end
+
   local base
   if pr.baseRefOid then
     -- The merge base, not the tip of the base branch: for a merged pull
     -- request the tip already contains the head, and the diff comes out empty.
-    local out = git.run(root, { "merge-base", pr.baseRefOid, ref })
+    out = git.run(root, { "merge-base", pr.baseRefOid, ref })
     base = out and out[1]
   end
   if not base or base == "" then
@@ -157,9 +149,31 @@ function M.open(repo, pr)
     return nil, derr
   end
 
-  local _, werr = git.run(root, { "worktree", "add", "--detach", worktree, ref })
-  if werr then
-    return nil, ("could not create the review worktree: %s"):format(werr)
+  if registered(root, worktree) and vim.fn.isdirectory(worktree) == 1 then
+    -- Already checked out from an earlier session: move it onto the new head.
+    -- A hard reset rather than a checkout because the worktree is only ever
+    -- read -- there is nothing in it worth preserving, and a reset copes with
+    -- one left in any state at all.
+    local _, rerr = git.run(worktree, { "reset", "--hard", "--quiet", ref })
+    if rerr then
+      return nil, ("could not move the review worktree onto %s: %s"):format(head:sub(1, 7), rerr)
+    end
+  else
+    -- Either there is nothing there, or there is a directory git does not
+    -- know about.  Clear the second case away before asking for the worktree,
+    -- since `worktree add` refuses a path that already exists.
+    if vim.fn.isdirectory(worktree) == 1 then
+      git.run(root, { "worktree", "remove", "--force", worktree })
+      vim.fn.delete(worktree, "rf")
+    end
+    -- A registration left behind by a directory that is gone would claim the
+    -- path just the same.
+    git.run(root, { "worktree", "prune" })
+
+    local _, werr = git.run(root, { "worktree", "add", "--detach", worktree, ref })
+    if werr then
+      return nil, ("could not create the review worktree: %s"):format(werr)
+    end
   end
 
   -- Warm the object cache while we still have the network.  On a partial
@@ -189,6 +203,58 @@ function M.open(repo, pr)
     head = head,
     number = pr.number,
   }
+end
+
+--- Bring a pull request onto disk, or reconnect to a review already there.
+---
+--- Needs the network the first time and never again: a review already on disk
+--- is reconnected to from meta.json, which is what lets one be finished
+--- offline -- and what leaves it on the commit it was started at.  M.update()
+--- is how it catches up.
+---@param repo table { name, owner, repo }
+---@param pr table  as returned by gauntlet.github
+---@return table|nil review { dir, worktree, base, head, number }, string|nil err
+function M.open(repo, pr)
+  local root, err = git.root()
+  if not root then
+    return nil, err
+  end
+
+  local dir = M.dir(repo, pr.number)
+  local worktree = vim.fs.joinpath(dir, "worktree")
+
+  if registered(root, worktree) and vim.fn.isdirectory(worktree) == 1 then
+    local meta = read_json(vim.fs.joinpath(dir, "meta.json"))
+    if meta and meta.base and meta.head then
+      return {
+        dir = dir,
+        worktree = worktree,
+        base = meta.base,
+        head = meta.head,
+        number = pr.number,
+      }
+    end
+    -- The worktree is there but we cannot say what it holds; start again.
+    git.run(root, { "worktree", "remove", "--force", worktree })
+  end
+
+  return sync(root, repo, pr)
+end
+
+--- Fetch the pull request again and move the review onto its current head.
+---
+--- The deliberate opposite of open(): always the network, always the commit
+--- the branch is on now.  Commits pushed after a review was started are
+--- otherwise invisible to it, because open() answers from meta.json.
+---@param repo table { name, owner, repo }
+---@param pr table  as returned by gauntlet.github, freshly fetched
+---@return table|nil review, string|nil err
+function M.update(repo, pr)
+  local root, err = git.root()
+  if not root then
+    return nil, err
+  end
+  return sync(root, repo, pr)
 end
 
 --- Remove a review: its worktree, its ref, and everything gauntlet kept.

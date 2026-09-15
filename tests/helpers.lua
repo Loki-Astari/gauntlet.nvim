@@ -119,4 +119,28 @@ function M.repo_with_pr(number)
   }
 end
 
+--- Push another commit onto a pull request, the way a contributor does after
+--- a review has already been started.  The remote's refs/pull/<n>/head moves;
+--- the clone is left exactly as it was, with no local trace of it.
+---@param fixture table  from M.repo_with_pr
+---@param number integer  pull request number
+---@param path string  a file to add
+---@param text string
+---@return string head  the pull request's new head commit
+function M.push_to_pr(fixture, number, path, text)
+  local root = fixture.root
+  git(root, { "fetch", "-q", "origin", ("+refs/pull/%d/head:refs/heads/pr-more"):format(number) })
+  git(root, { "checkout", "-q", "pr-more" })
+
+  write(root, path, text)
+  git(root, { "add", "-A" })
+  git(root, { "commit", "-qm", "another commit on the pull request" })
+  local head = git(root, { "rev-parse", "HEAD" })[1]
+
+  git(root, { "push", "-q", "origin", ("+pr-more:refs/pull/%d/head"):format(number) })
+  git(root, { "checkout", "-q", "main" })
+  git(root, { "branch", "-qD", "pr-more" })
+  return head
+end
+
 return M

@@ -185,22 +185,71 @@ function M.review(input)
   end)
 end
 
---- Fetch this review's comment threads from GitHub again.
+--- Bring a review up to date with GitHub: commits pushed to the branch since
+--- it was started, and the comment threads.
+---
+--- This is the other half of the offline bargain.  Everything else answers
+--- from disk -- which is what lets a review be finished with no network, and
+--- what leaves it on the commit it was opened at.  This is the one command
+--- that goes and looks.
+---
+--- The commits come first because the threads are read against them, and
+--- because a review showing a stale diff is the worse failure of the two: a
+--- thread fetch that fails leaves the cached threads in place and says so,
+--- and the new commits are on show either way.
 ---@param state table  a review, as returned by ui.review
 ---@return boolean ok
 function M.refresh(state)
+  local github = require("gauntlet.github")
+  local worktree = require("gauntlet.worktree")
+  local changes = require("gauntlet.changes")
   local threads = require("gauntlet.threads")
-  local store, err = threads.refresh(state.repo, state.review)
-  if not store then
-    vim.notify("gauntlet: could not fetch the comment threads: " .. err, vim.log.levels.ERROR)
+
+  local was = state.review.head
+
+  -- The pull request itself first: it carries the head the branch is on now,
+  -- and the base branch tip the merge base is worked out from.
+  local pr, err = github.get_open(state.repo, state.pr.number)
+  if not pr then
+    vim.notify("gauntlet: " .. err, vim.log.levels.ERROR)
     return false
   end
 
-  state.threads = store
-  require("gauntlet.ui").redraw(state)
+  local review
+  review, err = worktree.update(state.repo, pr)
+  if not review then
+    vim.notify("gauntlet: could not update the review: " .. err, vim.log.levels.ERROR)
+    return false
+  end
+
+  local files
+  files, err = changes.list(state.root, review.base, review.head)
+  if not files then
+    vim.notify("gauntlet: " .. err, vim.log.levels.ERROR)
+    return false
+  end
+
+  state.pr, state.review, state.files = pr, review, files
+
+  local store, terr = threads.refresh(state.repo, review)
+  if store then
+    state.threads = store
+  else
+    -- A failed fetch leaves the cache alone, so the threads already on show
+    -- stay on show.  The new commits are worth having without them.
+    vim.notify("gauntlet: could not fetch the comment threads: " .. terr, vim.log.levels.WARN)
+  end
+
+  require("gauntlet.ui").reload(state)
+
+  local count = #((state.threads or {}).threads or {})
   vim.notify(
-    ("gauntlet: %d comment thread%s on #%d"):format(
-      #store.threads, #store.threads == 1 and "" or "s", state.pr.number),
+    ("gauntlet: #%d %s %s -- %d file%s, %d comment thread%s"):format(
+      state.pr.number,
+      was == review.head and "is still at" or "moved to",
+      review.head:sub(1, 7),
+      #files, #files == 1 and "" or "s",
+      count, count == 1 and "" or "s"),
     vim.log.levels.INFO
   )
   return true

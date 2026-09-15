@@ -137,6 +137,65 @@ describe("gauntlet.ui", function()
     end)
   end)
 
+  describe("reloading after new commits", function()
+    -- :GauntletRefresh moves the worktree onto the branch's current head and
+    -- then calls ui.reload, which has to rebuild what was read from the old
+    -- one.  The worktree move itself is covered in worktree_spec.
+
+    it("rebuilds the file list", function()
+      table.insert(state.files, {
+        path = "later.txt", status = "A", additions = 1, deletions = 0, binary = false,
+      })
+      table.sort(state.files, function(a, b)
+        return a.path < b.path
+      end)
+      ui.reload(state)
+
+      local text = table.concat(sidebar_lines(), "\n")
+      assert.is_truthy(text:find("Files (5)", 1, true))
+      assert.is_truthy(text:find("A later.txt", 1, true))
+    end)
+
+    it("keeps the file on show, even when it has moved up the list", function()
+      select_entry("new.txt")
+      table.remove(state.files, 1) -- big.txt, above it in the list
+      ui.reload(state)
+
+      assert.equals("new.txt", state.diff.file.path)
+      assert.equals(2, #panes())
+      assert.same({ "fresh" }, vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(panes()[2]), 0, -1, false))
+      assert.equals(line_of("new.txt"), state.current)
+    end)
+
+    it("falls back to the conversation when the new head drops that file", function()
+      select_entry("new.txt")
+      state.files = vim.tbl_filter(function(file)
+        return file.path ~= "new.txt"
+      end, state.files)
+      ui.reload(state)
+
+      assert.is_nil(state.diff)
+      assert.equals(1, #panes())
+      local buf = vim.api.nvim_win_get_buf(panes()[1])
+      assert.equals("# #142  Fix off-by-one in ring buffer", vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1])
+      assert.equals(line_of("Conversation"), state.current)
+    end)
+
+    it("re-reads the worktree rather than trusting the buffer it has", function()
+      -- The right-hand pane is the real file, and the worktree has just been
+      -- reset onto another commit underneath it.
+      select_entry("change.txt")
+      vim.fn.writefile({ "alpha", "BETA", "gamma", "delta" },
+        vim.fs.joinpath(state.review.worktree, "change.txt"))
+      ui.reload(state)
+
+      assert.same(
+        { "alpha", "BETA", "gamma", "delta" },
+        vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(panes()[2]), 0, -1, false)
+      )
+    end)
+  end)
+
   describe("selecting a file", function()
     it("shows both sides side by side, in diff mode", function()
       select_entry("change.txt")
@@ -174,6 +233,58 @@ describe("gauntlet.ui", function()
       for _, win in ipairs(panes()) do
         assert.is_false(vim.bo[vim.api.nvim_win_get_buf(win)].modifiable)
       end
+    end)
+
+    it("shows the real file on the right, so LSP and gd have a path", function()
+      -- The reason the whole project is checked out: the right-hand side is a
+      -- genuine file, with its filetype detected from it.
+      select_entry("change.txt")
+      local buf = vim.api.nvim_win_get_buf(panes()[2])
+      assert.equals("", vim.bo[buf].buftype)
+      assert.equals(
+        vim.fn.resolve(vim.fs.joinpath(state.review.worktree, "change.txt")),
+        vim.fn.resolve(vim.api.nvim_buf_get_name(buf))
+      )
+    end)
+
+    it("keeps that file out of the buffer list", function()
+      -- It is a pane of the review, not a document the reviewer opened.  A
+      -- listed buffer shows in :ls, in <C-^> and in bufferline plugins, where
+      -- it reads as the file having been opened a second time.
+      select_entry("change.txt")
+      for _, win in ipairs(panes()) do
+        assert.is_false(vim.bo[vim.api.nvim_win_get_buf(win)].buflisted)
+      end
+      assert.is_nil(
+        vim.api.nvim_exec2("ls", { output = true }).output:find("change.txt", 1, true)
+      )
+    end)
+
+    it("writes no swap file for a side that cannot be edited", function()
+      select_entry("change.txt")
+      assert.equals("", vim.fn.swapname(vim.api.nvim_win_get_buf(panes()[2])))
+    end)
+
+    it("leaves no buffer behind when another file is selected", function()
+      -- Otherwise browsing a pull request strands one buffer per file looked at.
+      select_entry("change.txt")
+      local left, right = vim.api.nvim_win_get_buf(panes()[1]), vim.api.nvim_win_get_buf(panes()[2])
+
+      select_entry("big.txt")
+      assert.is_false(vim.api.nvim_buf_is_valid(left))
+      assert.is_false(vim.api.nvim_buf_is_valid(right))
+    end)
+
+    it("spares a buffer the reviewer opened in another tab page", function()
+      select_entry("change.txt")
+      local right = vim.api.nvim_win_get_buf(panes()[2])
+
+      vim.cmd("tabnew")
+      vim.api.nvim_win_set_buf(0, right)
+      vim.api.nvim_set_current_tabpage(state.tab)
+
+      select_entry("big.txt")
+      assert.is_true(vim.api.nvim_buf_is_valid(right))
     end)
 
     it("goes back to the conversation", function()

@@ -159,15 +159,37 @@ end
 --- review must not be able to change the checkout.
 ---@param state table
 ---@param file table
---- Throw away the scratch buffers a diff was using.
---- They are kept alive across a window rebuild, so something has to end them.
+--- Is this buffer on show somewhere other than the review's own tab page?
+--- The right-hand pane is a real file, and the reviewer may have split it off
+--- or followed `gd` into it elsewhere.  A window they opened is theirs.
+---@param state table
+---@param buf integer
+---@return boolean
+local function shown_outside(state, buf)
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(win) == buf
+      and vim.api.nvim_win_get_tabpage(win) ~= state.tab
+    then
+      return true
+    end
+  end
+  return false
+end
+
+--- Throw away the buffers a diff was using.
+---
+--- They deliberately outlive their windows -- opening the comment composer
+--- closes and reopens the panes around them -- so something has to end them
+--- when the review moves on.  Both sides go, the right-hand one included:
+--- it is a real file in the worktree, and left behind it would pile up, one
+--- stale buffer per file the reviewer had looked at.
 ---@param state table
 function discard_panes(state)
   if not state.diff then
     return
   end
   for _, pane in ipairs({ state.diff.left, state.diff.right }) do
-    if vim.api.nvim_buf_is_valid(pane.buf) and vim.bo[pane.buf].buftype == "nofile" then
+    if vim.api.nvim_buf_is_valid(pane.buf) and not shown_outside(state, pane.buf) then
       pcall(vim.api.nvim_buf_delete, pane.buf, { force = true })
     end
   end
@@ -191,17 +213,28 @@ local function show_diff(state, file)
   local worktree_file = vim.fs.joinpath(state.review.worktree, file.path)
 
   local head_buf
-  vim.api.nvim_set_current_win(right)
   if vim.fn.filereadable(worktree_file) == 1 then
-    vim.cmd.edit(vim.fn.fnameescape(worktree_file))
-    head_buf = vim.api.nvim_get_current_buf()
+    -- bufadd() and bufload() rather than :edit.  They do the part that is
+    -- wanted -- read the real file, and run filetype detection, which is what
+    -- a language server attaches to -- without the part that is not: :edit
+    -- adds the buffer to the buffer list, where a pane of the review reads as
+    -- a second copy of the file the reviewer just opened, in :ls, in <C-^>,
+    -- and in every bufferline plugin.  Detection is worth keeping over
+    -- setting 'filetype' by hand: it reads a shebang, which a filename alone
+    -- cannot.
+    head_buf = vim.fn.bufadd(worktree_file)
+    -- Both before the load: no swap file is then ever written for a buffer
+    -- that cannot be edited, and the buffer is never listed even briefly.
+    vim.bo[head_buf].swapfile = false
+    vim.bo[head_buf].buflisted = false
+    vim.fn.bufload(head_buf)
     vim.bo[head_buf].modifiable = false
     vim.bo[head_buf].readonly = true
   else
     -- A deleted file has no right-hand side.
     head_buf = scratch({}, ("gauntlet://pr-%d/deleted/%s"):format(state.pr.number, file.path), filetype, true)
-    vim.api.nvim_win_set_buf(right, head_buf)
   end
+  vim.api.nvim_win_set_buf(right, head_buf)
   content_window(right)
 
   for _, win in ipairs({ left, right }) do
@@ -677,6 +710,64 @@ end
 ---@param state table
 function M.redraw(state)
   annotate(state)
+  M.render_sidebar(state)
+end
+
+--- Draw a review whose content has moved underneath it: a new head commit,
+--- and so a new file list and new diffs.
+---
+--- redraw() is not enough for that.  It repaints what is already on screen,
+--- and after :GauntletRefresh what is on screen was read from the commit the
+--- review used to be on.
+---
+--- The file being looked at is followed by path rather than by sidebar line,
+--- because a new commit can add or drop files above it.  One the new head no
+--- longer touches has nothing left to show, so that falls back to the
+--- conversation.
+---@param state table
+function M.reload(state)
+  -- The right-hand pane of a diff is the real file in the worktree, and the
+  -- worktree has just been moved onto another commit.  Neovim is still
+  -- holding the old contents, so drop those buffers rather than trusting
+  -- :edit to notice the file changed under it.
+  local inside = vim.fs.normalize(state.review.worktree) .. "/"
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local name = vim.api.nvim_buf_get_name(buf)
+    if name ~= "" and vim.startswith(vim.fs.normalize(name), inside) then
+      pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    end
+  end
+
+  local showing = state.diff and state.diff.file.path
+  M.render_sidebar(state)
+
+  local target_line, target
+  for line, entry in pairs(state.lines) do
+    if showing and entry.kind == "file" and entry.file.path == showing then
+      target_line, target = line, entry
+      break
+    end
+  end
+  if not target then
+    for line, entry in pairs(state.lines) do
+      if entry.kind == "conversation" then
+        target_line, target = line, entry
+        break
+      end
+    end
+  end
+
+  state.current = target_line
+  if target and target.kind == "file" then
+    show_diff(state, target.file)
+  else
+    show_conversation(state)
+  end
+
+  if target_line then
+    pcall(vim.api.nvim_win_set_cursor, state.sidebar_win, { target_line, 0 })
+  end
+  vim.api.nvim_set_current_win(state.sidebar_win)
   M.render_sidebar(state)
 end
 
